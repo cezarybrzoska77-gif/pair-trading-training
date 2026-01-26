@@ -6,18 +6,29 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
+import time
 
-# --- KROK 1: POBRANIE DANYCH ---
+# --- KROK 1: POBRANIE DANYCH Z RETRY ---
 ticker_x = "ADBE"
 ticker_y = "CRM"
 start_date = "2022-01-01"
 
-# Pobranie danych (tylko Adjusted Close)
-data = yf.download([ticker_x, ticker_y], start=start_date)["Adj Close"]
-
-# Jeśli pobrany tylko jeden ticker, zamieniamy Series na DataFrame
-if isinstance(data, pd.Series):
-    data = data.to_frame()
+max_retries = 5
+for attempt in range(max_retries):
+    try:
+        # Pobranie tylko Adjusted Close
+        data = yf.download([ticker_x, ticker_y], start=start_date)["Adj Close"]
+        if isinstance(data, pd.Series):
+            data = data.to_frame()
+        # Sprawdzenie czy są wartości
+        if data.dropna().empty:
+            raise ValueError("Pobrany DataFrame jest pusty")
+        break  # dane pobrane poprawnie
+    except Exception as e:
+        print(f"Błąd pobierania danych (próba {attempt+1}/{max_retries}): {e}")
+        time.sleep(3)
+else:
+    raise RuntimeError("Nie udało się pobrać danych po kilku próbach")
 
 print("Pierwsze 5 obserwacji:")
 print(data.head())
