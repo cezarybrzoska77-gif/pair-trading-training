@@ -7,51 +7,49 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 
-# --- KROK 1: POBRANIE DANYCH POJEDYNCZO (auto_adjust) ---
+# --- KROK 1: POBRANIE DANYCH ---
 ticker_x = "ADBE"
 ticker_y = "CRM"
 start_date = "2022-01-01"
 
 try:
-    # Pobranie danych pojedynczo, auto_adjust=True
-    data_x = yf.download(ticker_x, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_x})
-    data_y = yf.download(ticker_y, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_y})
+    # Pobranie pojedynczo, auto_adjust=True
+    data_x = yf.download(ticker_x, start=start_date, auto_adjust=True)["Close"]
+    data_y = yf.download(ticker_y, start=start_date, auto_adjust=True)["Close"]
 
-    # Połączenie w jeden DataFrame
+    # Połączenie w jeden DataFrame i prosty index kolumn
     data = pd.concat([data_x, data_y], axis=1)
+    data.columns = [ticker_x, ticker_y]
 
-    if data.dropna().empty:
+    # Czyszczenie danych
+    data = data.dropna()
+    if data.empty:
         raise RuntimeError("Nie udało się pobrać danych")
 except Exception as e:
     raise RuntimeError(f"Błąd pobierania danych: {e}")
 
 print("Pierwsze 5 obserwacji:")
 print(data.head())
-
-# --- KROK 2: CZYSZCZENIE DANYCH ---
-data = data.dropna()
 print("\nLiczba obserwacji:", len(data))
 
-# --- KROK 3: HEDGE RATIO ---
+# --- KROK 2: HEDGE RATIO ---
 X = sm.add_constant(data[ticker_y])
 model = sm.OLS(data[ticker_x], X).fit()
-
-# Odwołanie po nazwie kolumny, nie indeksie
 hedge_ratio = model.params[ticker_y]
 print("\nHedge ratio (ADBE vs CRM):", round(hedge_ratio, 4))
 
-# --- KROK 4: SPREAD ---
+# --- KROK 3: SPREAD ---
 spread = data[ticker_x] - hedge_ratio * data[ticker_y]
 print("\nSpread – pierwsze wartości:")
 print(spread.head())
 
-# --- KROK 5: Z-SCORE ---
+# --- KROK 4: Z-SCORE ---
 spread_mean = spread.mean()
 spread_std = spread.std()
 z_score = (spread - spread_mean) / spread_std
 print("\nAktualny Z-score:", round(z_score.iloc[-1], 2))
 
-# --- KROK 6: HALF-LIFE ---
+# --- KROK 5: HALF-LIFE ---
 spread_lag = spread.shift(1)
 spread_ret = spread - spread_lag
 spread_lag = sm.add_constant(spread_lag.dropna())
