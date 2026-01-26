@@ -4,14 +4,14 @@
 
 """
 pair_adbe_crm.py
-Skrypt do par tradingu ADBE–CRM:
-- Pobiera dane (Adj Close),
-- Liczy hedge ratio (OLS z wyrazem wolnym),
-- Buduje spread,
-- Liczy Z-score,
-- Estymuje half-life procesu OU (Δs_t = α + β s_{t-1} + ε) z poprawnym indeksowaniem parametru 'lag'.
+Analiza pary ADBE–CRM:
+- Pobiera Adj Close
+- Liczy hedge ratio (OLS: ADBE ~ const + CRM)
+- Buduje spread
+- Liczy Z-score (wraz z ostatnią wartością)
+- Estymuje half-life procesu OU: Δs_t = α + β * s_{t-1} + ε, half-life = -ln(2)/β (dla β < 0)
 
-Wymagane biblioteki: numpy, pandas, statsmodels, yfinance (instalacja on-the-fly jeśli brak).
+Wymagania: numpy, pandas, statsmodels, yfinance
 """
 
 import sys
@@ -28,17 +28,22 @@ def _safe_imports():
         import pandas as pd
         import statsmodels.api as sm
     except ImportError as e:
-        print(f"Brakująca biblioteka: {e}. Zainstaluj: numpy, pandas, statsmodels")
+        print("Brakująca biblioteka. Zainstaluj wymagane paczki:")
+        print("  pip install numpy pandas statsmodels yfinance")
         raise
 
-    # yfinance może nie być zainstalowane w niektórych środowiskach (np. GitHub Actions slim)
+    # yfinance: spróbuj doinstalować automatycznie, jeśli brak
     try:
         import yfinance as yf
     except ImportError:
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance", "--quiet"])
-        import yfinance as yf
-
+        try:
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance", "--quiet"])
+            import yfinance as yf
+        except Exception as e:
+            print("Nie udało się zainstalować yfinance automatycznie. Zainstaluj ręcznie:")
+            print("  pip install yfinance")
+            raise
     return np, pd, sm, yf
 
 np, pd, sm, yf = _safe_imports()
@@ -47,10 +52,10 @@ np, pd, sm, yf = _safe_imports()
 # --- Funkcje pomocnicze ---
 def fetch_prices(tickers, start=None, end=None):
     """
-    Pobiera Adj Close dla listy tickerów do ramki z kolumnami = tickery i wspólnym indeksem dat.
+    Pobiera Adj Close dla listy tickerów i zwraca DataFrame o kolumnach = tickery oraz wspólnym indeksie dat.
     """
     if start is None:
-        # domyślnie: ostatnie 4 lata (ok. 1000 sesji)
+        # ~4 lata wstecz (ok. 1000 sesji)
         start = (datetime.utcnow() - timedelta(days=365*4+30)).strftime("%Y-%m-%d")
     if end is None:
         end = datetime.utcnow().strftime("%Y-%m-%d")
@@ -59,23 +64,37 @@ def fetch_prices(tickers, start=None, end=None):
         tickers=tickers,
         start=start,
         end=end,
-        progress=False,   # wycisza pasek postępu yfinance
-        auto_adjust=False # bierzemy Adj Close jawnie
+        progress=False,    # wycisza progress bar
+        auto_adjust=False
     )
 
-    if "Adj Close" in data.columns:
-        data = data["Adj Close"].copy()
+    if data is None or len(data) == 0:
+        raise RuntimeError("Brak danych z yfinance. Sprawdź tickery i połączenie.")
+
+    # yfinance zwykle zwraca MultiIndex w kolumnach; wybierz "Adj Close"
+    if isinstance(data.columns, pd.MultiIndex):
+        lvl0 = data.columns.get_level_values(0)
+        if "Adj Close" in set(lvl0):
+            data = data["Adj Close"].copy()
+        elif "Close" in set(lvl0):
+            data = data["Close"].copy()
+        else:
+            # jeśli struktura nietypowa, spróbuj wydobyć po pierwszym poziomie
+            raise RuntimeError("Nie znaleziono poziomu 'Adj Close' w danych yfinance.")
     else:
-        # Jeżeli yfinance zwróci płaską ramkę (rzadkie przypadki)
+        # Płaskie kolumny — przyjmij, że to już są ceny zamknięcia skorygowane
         data = data.copy()
 
-    # Gdy jest jeden ticker, yfinance zwraca Series—zamieńmy na DataFrame
+    # Jeśli dla jednego tickera dostalibyśmy Series, rzutuj na DataFrame
     if isinstance(data, pd.Series):
         data = data.to_frame()
 
-    # Upewnij się, że kolumny to dokładnie nazwy tickerów
-    data = data.loc[:, tickers]
+    # Uporządkuj kolumny według podanych tickerów i usuń braki z obu serii
+    data = data.reindex(columns=tickers)
     data = data.dropna(how="any")
+
+    if data.empty:
+        raise RuntimeError("Po oczyszczeniu z NaN brak wspólnych obserwacji dla tickerów.")
 
     return data
 
@@ -83,12 +102,12 @@ def fetch_prices(tickers, start=None, end=None):
 def compute_hedge_ratio(y, x):
     """
     OLS: y ~ const + x
-    Zwraca (model, hedge_ratio), gdzie hedge_ratio to współczynnik przy x.
+    Zwraca (model, hedge_ratio), gdzie hedge_ratio to współczynnik przy 'x'.
     """
     X = pd.DataFrame({"x": x})
     X = sm.add_constant(X)  # kolumny: const, x
     model = sm.OLS(y, X).fit()
-    hedge_ratio = model.params["x"]
+    hedge_ratio = float(model.params["x"])
     return model, hedge_ratio
 
 
@@ -104,15 +123,15 @@ def compute_spread(y, x, hedge_ratio):
 def compute_zscore(series):
     """
     Z-score: (x - mean) / std
-    Zwraca: (z_series, current_z)
+    Zwraca (z_series, current_z)
     """
     mu = series.mean()
     sigma = series.std(ddof=1)
     if sigma == 0 or np.isnan(sigma):
-        z = pd.Series(index=series.index, data=np.nan)
+        z = pd.Series(index=series.index, data=np.nan, name="zscore")
         current = np.nan
     else:
-        z = (series - mu) / sigma
+        z = ((series - mu) / sigma).rename("zscore")
         current = float(z.iloc[-1])
     return z, current
 
@@ -121,7 +140,7 @@ def estimate_half_life(spread):
     """
     Half-life dla procesu OU:
       Δs_t = α + β * s_{t-1} + ε
-    λ ≈ -β, half-life = ln(2) / λ = -ln(2)/β  (dla β < 0)
+    λ ≈ -β  =>  half-life = ln(2) / λ = -ln(2)/β  (dla β < 0)
     Zwraca (half_life_float, model)
     """
     df = pd.DataFrame({
@@ -129,23 +148,21 @@ def estimate_half_life(spread):
         "ds": spread.diff()
     }).dropna()
 
-    # Zabezpieczenie: wystarczająco obserwacji?
     if len(df) < 10:
-        return math.inf, None
+        return math.inf, None  # zbyt mało danych na sensowną estymację
 
     X = sm.add_constant(df["lag"])  # kolumny: const, lag
     y = df["ds"]
     model = sm.OLS(y, X).fit()
 
-    # Używamy NAZWY parametru, nie indeksu liczbowego!
-    beta = model.params["lag"]
+    # Kluczowa poprawka: odczyt parametru po NAZWIE, nie po indeksie liczbowym
+    beta = float(model.params["lag"])
 
-    # Zabezpieczenia numeryczne i interpretacyjne
     if beta >= 0 or np.isclose(beta, 0.0):
-        # Brak średniopowrotności – half-life nie ma sensownej dodatniej wartości
+        # Brak średniopowrotności (OU wymaga β < 0)
         return math.inf, model
 
-    half_life = -np.log(2.0) / beta  # beta < 0 => wartość dodatnia
+    half_life = -math.log(2.0) / beta  # beta < 0 => wynik dodatni
     return float(half_life), model
 
 
@@ -158,16 +175,16 @@ def pretty_number(x, digits=4):
 
 # --- Główna logika ---
 def main():
-    # Parametry
+    # Parametry wejściowe
     tickers = ["ADBE", "CRM"]
-    start = "2022-01-01"  # możesz zmienić zakres dat
+    start = "2022-01-01"  # można zmienić na dłuższy okres
     end = None            # do dzisiaj
 
     # 1) Pobierz dane
     prices = fetch_prices(tickers, start=start, end=end)
-    prices.columns = tickers  # upewnij się, że nazwy kolumn to ADBE, CRM
+    prices.columns = tickers  # upewnij się, że nazwy kolumn to dokładnie ADBE, CRM
 
-    # 2) Log diagnostyczny
+    # 2) Podgląd danych
     print("Pierwsze 5 obserwacji:")
     print(prices.head())
     print(f"\nLiczba obserwacji: {len(prices)}\n")
@@ -194,16 +211,15 @@ def main():
     # 6) Half-life OU
     half_life, hl_model = estimate_half_life(spread)
     if math.isinf(half_life):
-        print("Half-life: ∞ (beta >= 0 lub zbyt mało danych — brak średniopowrotności lub niestabilna estymacja)\n")
+        print("Half-life: ∞ (β >= 0, zbyt mało danych lub brak średniopowrotności)\n")
     else:
         print(f"Half-life (dni): {pretty_number(half_life, 2)}\n")
 
-    # (opcjonalnie) Podsumowanie modelu half-life w debugowaniu:
+    # (opcjonalnie) Jeśli debugujesz:
     # if hl_model is not None:
     #     print(hl_model.summary())
 
-    # 7) Prosta logika sygnałów (opcjonalnie, do wglądu)
-    #    Wejście: |Z| > 2, Wyjście: |Z| < 0.5
+    # 7) Prosta logika sygnałów (opcjonalna)
     entry_z = 2.0
     exit_z = 0.5
     signal = None
@@ -216,10 +232,8 @@ def main():
             signal = "Wyjście z pozycji (mean reversion osiągnięte)"
         else:
             signal = "Utrzymaj / brak nowego sygnału"
-
         print(f"Sygnał (reguły Z=±{entry_z}, wyjście {exit_z}): {signal}")
 
-    # 8) Informacyjnie: data ostatniej obserwacji
     print(f"Ostatnia data w danych: {prices.index[-1].date()}")
 
 
