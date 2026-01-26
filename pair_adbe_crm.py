@@ -7,19 +7,19 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 
-# --- KROK 1: POBRANIE DANYCH POJEDYNCZO ---
+# --- KROK 1: POBRANIE DANYCH POJEDYNCZO (auto_adjust) ---
 ticker_x = "ADBE"
 ticker_y = "CRM"
 start_date = "2022-01-01"
 
 try:
-    # Pobranie pojedynczo
-    data_x = yf.download(ticker_x, start=start_date)["Adj Close"].rename(ticker_x)
-    data_y = yf.download(ticker_y, start=start_date)["Adj Close"].rename(ticker_y)
-    
+    # Pobranie danych pojedynczo, używając auto_adjust=True
+    data_x = yf.download(ticker_x, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_x})
+    data_y = yf.download(ticker_y, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_y})
+
     # Połączenie w jeden DataFrame
     data = pd.concat([data_x, data_y], axis=1)
-    
+
     if data.dropna().empty:
         raise RuntimeError("Nie udało się pobrać danych")
 except Exception as e:
