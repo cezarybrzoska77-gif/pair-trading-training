@@ -6,29 +6,24 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-import time
 
-# --- KROK 1: POBRANIE DANYCH Z RETRY ---
+# --- KROK 1: POBRANIE DANYCH POJEDYNCZO ---
 ticker_x = "ADBE"
 ticker_y = "CRM"
 start_date = "2022-01-01"
 
-max_retries = 5
-for attempt in range(max_retries):
-    try:
-        # Pobranie tylko Adjusted Close
-        data = yf.download([ticker_x, ticker_y], start=start_date)["Adj Close"]
-        if isinstance(data, pd.Series):
-            data = data.to_frame()
-        # Sprawdzenie czy są wartości
-        if data.dropna().empty:
-            raise ValueError("Pobrany DataFrame jest pusty")
-        break  # dane pobrane poprawnie
-    except Exception as e:
-        print(f"Błąd pobierania danych (próba {attempt+1}/{max_retries}): {e}")
-        time.sleep(3)
-else:
-    raise RuntimeError("Nie udało się pobrać danych po kilku próbach")
+try:
+    # Pobranie pojedynczo
+    data_x = yf.download(ticker_x, start=start_date)["Adj Close"].rename(ticker_x)
+    data_y = yf.download(ticker_y, start=start_date)["Adj Close"].rename(ticker_y)
+    
+    # Połączenie w jeden DataFrame
+    data = pd.concat([data_x, data_y], axis=1)
+    
+    if data.dropna().empty:
+        raise RuntimeError("Nie udało się pobrać danych")
+except Exception as e:
+    raise RuntimeError(f"Błąd pobierania danych: {e}")
 
 print("Pierwsze 5 obserwacji:")
 print(data.head())
