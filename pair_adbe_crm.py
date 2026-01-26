@@ -13,7 +13,7 @@ ticker_y = "CRM"
 start_date = "2022-01-01"
 
 try:
-    # Pobranie danych pojedynczo, używając auto_adjust=True
+    # Pobranie danych pojedynczo, auto_adjust=True
     data_x = yf.download(ticker_x, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_x})
     data_y = yf.download(ticker_y, start=start_date, auto_adjust=True)[["Close"]].rename(columns={"Close": ticker_y})
 
@@ -35,7 +35,9 @@ print("\nLiczba obserwacji:", len(data))
 # --- KROK 3: HEDGE RATIO ---
 X = sm.add_constant(data[ticker_y])
 model = sm.OLS(data[ticker_x], X).fit()
-hedge_ratio = model.params[1]
+
+# Odwołanie po nazwie kolumny, nie indeksie
+hedge_ratio = model.params[ticker_y]
 print("\nHedge ratio (ADBE vs CRM):", round(hedge_ratio, 4))
 
 # --- KROK 4: SPREAD ---
