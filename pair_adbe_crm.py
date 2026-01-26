@@ -12,11 +12,12 @@ ticker_x = "ADBE"
 ticker_y = "CRM"
 start_date = "2022-01-01"
 
-# Pobranie danych z Yahoo Finance
-data_raw = yf.download([ticker_x, ticker_y], start=start_date, group_by="ticker")
+# Pobranie danych (tylko Adjusted Close)
+data = yf.download([ticker_x, ticker_y], start=start_date)["Adj Close"]
 
-# Tworzymy czysty DataFrame tylko z Adjusted Close
-data = pd.DataFrame({ticker: data_raw[ticker]["Adj Close"] for ticker in [ticker_x, ticker_y]})
+# Jeśli pobrany tylko jeden ticker, zamieniamy Series na DataFrame
+if isinstance(data, pd.Series):
+    data = data.to_frame()
 
 print("Pierwsze 5 obserwacji:")
 print(data.head())
@@ -50,4 +51,3 @@ spread_ret = spread_ret.dropna()
 hl_model = sm.OLS(spread_ret, spread_lag).fit()
 half_life = -np.log(2) / hl_model.params[1]
 print("\nHalf-life (dni):", round(half_life, 1))
-
