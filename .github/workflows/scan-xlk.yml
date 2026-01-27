@@ -3,7 +3,7 @@ name: Scan XLK Pairs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 22 * * *"  # codziennie 22:00 UTC
+    - cron: "0 22 * * *"
 
 jobs:
   scan:
@@ -17,13 +17,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run scanner
         run: |
+          mkdir -p results
           python scan_xlk_pairs.py --start-date 2018-01-01 --out-csv results/xlk_pairs_candidates.csv
 
       - name: Upload results
