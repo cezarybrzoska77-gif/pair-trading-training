@@ -1,13 +1,14 @@
 name: Scan XLK Pairs
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # pozwala uruchomić ręcznie z UI
   schedule:
-    - cron: "0 22 * * *"
+    - cron: "0 22 * * *"  # opcjonalnie: codziennie 22:00 UTC
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -25,10 +26,20 @@ jobs:
       - name: Run scanner
         run: |
           mkdir -p results
-          python scan_xlk_pairs.py --start-date 2018-01-01 --out-csv results/xlk_pairs_candidates.csv
+          python scan_xlk_pairs.py \
+            --start-date 2018-01-01 \
+            --corr-lookback 90 \
+            --coint-lookback 200 \
+            --corr-min 0.70 \
+            --pvalue-max 0.10 \
+            --half-life-max 30 \
+            --min-sample 150 \
+            --out-csv results/xlk_pairs_candidates.csv
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: xlk_pairs_candidates
-          path: results/xlk_pairs_candidates.csv
+          name: xlk_scan_outputs
+          path: |
+            results/xlk_pairs_candidates.csv
+            results/xlk_pairs_all_metrics.csv
