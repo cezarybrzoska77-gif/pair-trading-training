@@ -33,7 +33,6 @@ import yfinance as yf
 DEFAULT_START_DATE = "2015-01-01"
 
 # Najwięksi reprezentanci XLK (fallback, gdy nie podasz własnych tickerów).
-# Lista celowo ograniczona do kilku(nastu) najpłynniejszych; możesz rozszerzyć wedle potrzeb.
 DEFAULT_XLK_TICKERS = [
     "AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "META", "CRM", "CSCO", "ACN", "ADBE",
     "TXN", "QCOM", "AMD", "INTU", "ORCL", "AMAT", "NOW", "ADI", "MU", "IBM"
@@ -46,13 +45,12 @@ DEFAULT_XLK_TICKERS = [
 
 def print_progress(step: int, total_steps: int, width: int = 55, prefix: str = "") -> None:
     """
-    Prost y pasek postępu z procentami i gwiazdkami,
+    Prosty pasek postępu z procentami i gwiazdkami,
     drukuje nową linię dla każdego kroku (jak w podanym logu).
     """
     pct = int((step / total_steps) * 100)
     filled = int((pct / 100) * width)
     bar = "[" + "*" * filled + " " * (width - filled) + "]"
-    # Format podobny do przykładu: procent "w środku" i komentarz z prawej
     line = f"{bar}  {pct:>3}%"
     if prefix:
         line += f" {prefix}"
@@ -80,8 +78,8 @@ def extract_prices(
     cols = df.columns
 
     # MultiIndex przypadek: [field, ticker]
-    if isinstance(cols, pd.MultiIndex) and field_preferred in cols.get_level_values(0):
-        out = df[field_preferred].copy()
+    if isinstance(cols, pd.MultiIndex) and "Adj Close" in cols.get_level_values(0):
+        out = df[field_preferred].copy() if field_preferred in cols.get_level_values(0) else pd.DataFrame()
         if out.empty and field_fallback in cols.get_level_values(0):
             out = df[field_fallback].copy()
         if out.empty:
@@ -89,7 +87,7 @@ def extract_prices(
         return out
 
     # MultiIndex przypadek: [ticker, field]
-    if isinstance(cols, pd.MultiIndex) and field_preferred in cols.get_level_values(-1):
+    if isinstance(cols, pd.MultiIndex) and (field_preferred in cols.get_level_values(-1) or field_fallback in cols.get_level_values(-1)):
         try:
             out = df.xs(field_preferred, axis=1, level=-1)
         except KeyError:
@@ -123,7 +121,6 @@ def parse_tickers_from_cli(cli_list: List[str] | None) -> List[str]:
     if not cli_list:
         return []
     clean = [t.strip().upper() for t in cli_list if t and t.strip()]
-    # unikalne z zachowaniem kolejności
     seen = set()
     uniq = []
     for t in clean:
@@ -147,6 +144,7 @@ def resolve_universe(tickers_cli: List[str]) -> List[str]:
 def compute_top_correlated_pairs(prices: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
     """
     Liczy dzienne zwroty, korelacje i zwraca top N skorelowanych par (bez duplikatów).
+    Odporna na duplikację nazw poziomów indeksu przy reset_index().
     """
     if prices is None or prices.empty:
         return pd.DataFrame(columns=["ticker_i", "ticker_j", "corr"])
@@ -156,17 +154,28 @@ def compute_top_correlated_pairs(prices: pd.DataFrame, top_n: int = 20) -> pd.Da
         return pd.DataFrame(columns=["ticker_i", "ticker_j", "corr"])
 
     corr = returns.corr()
-    # bierzemy tylko górny trójkąt (bez diagonalnych 1.0)
+
+    # Unikalne nazwy poziomów, aby reset_index() nie wywalił błędu
+    corr.index.name = "ticker_i"
+    corr.columns.name = "ticker_j"
+
+    # Górny trójkąt bez przekątnej
     mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
-    corr_vals = corr.where(mask).stack().sort_values(ascending=False)
+    corr_vals = corr.where(mask)
 
-    top = corr_vals.head(top_n)
-    if top.empty:
-        return pd.DataFrame(columns=["ticker_i", "ticker_j", "corr"])
+    top = (
+        corr_vals.stack()
+        .sort_values(ascending=False)
+        .head(top_n)
+        .rename("corr")
+        .reset_index()  # => columns: ticker_i, ticker_j, corr
+    )
 
-    out = top.reset_index()
-    out.columns = ["ticker_i", "ticker_j", "corr"]
-    return out
+    if not top.empty:
+        # Opcjonalnie: uporządkuj leksykograficznie tickery w parze
+        top[["ticker_i", "ticker_j"]] = np.sort(top[["ticker_i", "ticker_j"]], axis=1)
+
+    return top
 
 
 # ======================
@@ -249,10 +258,8 @@ def main() -> int:
     step += 1
     try:
         if args.auto_adjust:
-            # W tym trybie 'Close' jest już skorygowany
             prices = extract_prices(data, field_preferred="Close", field_fallback="Close", tickers=universe)
         else:
-            # Standard: preferuj 'Adj Close', w razie braku fallback do 'Close'
             prices = extract_prices(data, field_preferred="Adj Close", field_fallback="Close", tickers=universe)
     except Exception as e:
         print_progress(step, total_steps, prefix="Ekstrakcja cen – BŁĄD")
@@ -264,8 +271,7 @@ def main() -> int:
     step += 1
     prices = prices.sort_index(axis=1)
     prices = prices.dropna(how="all")
-    # Opcjonalnie: usuń kolumny z bardzo małą ilością danych
-    min_non_na = max(10, int(0.2 * len(prices)))  # wymagaj min 10 obserwacji i >=20% próby
+    min_non_na = max(10, int(0.2 * len(prices)))  # min 10 obserwacji i >=20% próby
     prices = prices.dropna(axis=1, thresh=min_non_na)
     if prices.empty:
         print_progress(step, total_steps, prefix="Czyszczenie – BRAK DANYCH")
@@ -300,7 +306,6 @@ def main() -> int:
 
     if not top_pairs_df.empty:
         print("\nTop skorelowane pary (dzienny return, Pearson):")
-        # ładny wydruk
         for _, row in top_pairs_df.iterrows():
             print(f"  {row['ticker_i']:>6s} — {row['ticker_j']:<6s} | corr = {row['corr']:.4f}")
     else:
@@ -315,7 +320,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Niewielkie opóźnienie wyłącznie dla czytelności paska postępu (opcjonalne)
     t0 = time.time()
     try:
         code = main()
