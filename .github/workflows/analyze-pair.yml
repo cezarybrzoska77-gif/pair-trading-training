@@ -24,7 +24,7 @@ jobs:
       - name: Run pair analysis
         run: |
           mkdir -p results
-          python analyze_pair.py --start-date 2018-01-01 --out-csv results/klac_lrcx_analysis.csv
+          python analyze_pair.py --a KLAC --b LRCX --start-date 2018-01-01 --out-csv results/klac_lrcx_analysis.csv
 
       - name: Upload analysis results
         uses: actions/upload-artifact@v4
