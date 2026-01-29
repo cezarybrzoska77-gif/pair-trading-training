@@ -1,34 +1,32 @@
-name: Daily Tech Pairs Scanner
+name: Tech Pairs Scanner (Retail Mode)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 22 * * *'  # Daily at 22:00 UTC
+    - cron: "0 22 * * *"
 
 jobs:
-  scan-pairs:
+  scan:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
       
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
       
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Create results directory
-        run: mkdir -p results
-      
-      - name: Run pairs scanner
+      - name: Run scanner (retail mode)
         run: |
+          mkdir -p results
           python scan_pairs_retail.py \
             --tickers-file data/tickers_tech.txt \
             --start-date 2018-01-01 \
@@ -37,16 +35,14 @@ jobs:
             --min-sample 200 \
             --topk 50 \
             --out-csv results/tech_pairs_candidates.csv
+          echo "--- RESULTS DIR ---"
+          ls -la results || true
       
-      - name: List results
-        run: ls -la results || true
-      
-      - name: Upload artifacts
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: tech-pairs-results
+          name: tech_pairs_outputs
           path: |
             results/tech_pairs_candidates.csv
             results/tech_pairs_all_metrics.csv
           if-no-files-found: error
-          retention-days: 90
