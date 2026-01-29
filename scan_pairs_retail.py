@@ -63,10 +63,14 @@ def download_data_robust(
     logger.info(f"Downloading data for {len(tickers)} tickers from {start_date}")
     logger.info(f"Auto-adjust: {auto_adjust}")
     
-    all_prices = {}
+    all_prices = []
     failed_tickers = []
+    success_count = 0
     
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers, 1):
+        if i % 10 == 0:
+            logger.info(f"Progress: {i}/{len(tickers)} tickers")
+        
         try:
             df = yf.download(
                 ticker,
@@ -82,12 +86,15 @@ def download_data_robust(
             
             # Extract Close or Adj Close
             if "Close" in df.columns:
-                prices = df["Close"]
+                prices = df["Close"].copy()
             elif "Adj Close" in df.columns:
-                prices = df["Adj Close"]
+                prices = df["Adj Close"].copy()
             else:
                 failed_tickers.append(ticker)
                 continue
+            
+            # Rename to ticker symbol
+            prices.name = ticker
             
             # Check for sufficient data
             valid_data = prices.dropna()
@@ -96,10 +103,11 @@ def download_data_robust(
                 failed_tickers.append(ticker)
                 continue
             
-            all_prices[ticker] = prices
+            all_prices.append(prices)
+            success_count += 1
             
         except Exception as e:
-            logger.debug(f"{ticker}: download failed - {e}")
+            logger.debug(f"{ticker}: download failed - {str(e)[:100]}")
             failed_tickers.append(ticker)
             continue
     
@@ -108,14 +116,16 @@ def download_data_robust(
         sys.exit(1)
     
     # Combine into DataFrame
-    prices_df = pd.DataFrame(all_prices)
+    prices_df = pd.concat(all_prices, axis=1)
     
     logger.info(f"Successfully downloaded: {len(prices_df.columns)} tickers")
     if failed_tickers:
         logger.warning(f"Failed to download: {len(failed_tickers)} tickers")
-        logger.debug(f"Failed tickers: {', '.join(failed_tickers[:10])}")
+        if len(failed_tickers) <= 10:
+            logger.info(f"Failed tickers: {', '.join(failed_tickers)}")
     
     logger.info(f"Date range: {prices_df.index.min()} to {prices_df.index.max()}")
+    logger.info(f"Sample tickers: {', '.join(list(prices_df.columns[:5]))}")
     
     return prices_df
 
