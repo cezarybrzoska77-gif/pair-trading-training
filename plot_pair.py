@@ -4,23 +4,30 @@
 """
 plot_pair.py
 ------------
-Rysuje wykresy:
-- Spread (A - (alpha + beta * B)) + markery sygnałów Long/Short
-- Z-score (20/40/60) z liniami referencyjnymi (+/-2, +/-1.5)
+Rysuje wykresy dla pary (domyślnie KLAC–LRCX):
+
+- Spread = A - (alpha + beta * B) + markery sygnałów (Long/Short)
+- Z-score (20/40/60) z liniami ±2 i ±1.5
 
 Zapisy:
-- results/klac_lrcx_spread.png
-- results/klac_lrcx_zscore.png
-- results/klac_lrcx_combo.png (dwa panele w jednym)
+- results/<a>_<b>_spread.png
+- results/<a>_<b>_zscore.png
+- results/<a>_<b>_combo.png
 
-Uruchomienie lokalnie:
-    python plot_pair.py --a KLAC --b LRCX --start-date 2018-01-01
+Uruchomienie (lokalnie):
+    python plot_pair.py --a KLAC --b LRCX --start-date 2018-01-01 --out-dir results --auto-adjust
 
-Uwaga: Wykorzystuje yfinance i matplotlib.
+Uwaga:
+- Backend Matplotlib wymuszony na 'Agg', więc skrypt działa w środowiskach headless (np. GitHub Actions).
 """
+
+# --- WAŻNE: backend do środowisk bez ekranu (CI) ---
+import matplotlib
+matplotlib.use("Agg")  # to musi być przed "import matplotlib.pyplot as plt"
 
 import argparse
 import os
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -29,19 +36,25 @@ import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 
 
+# ---------- Pomocnicze ----------
+
 def info(msg: str) -> None:
     print(f"[INFO] {msg}", flush=True)
 
-
-# ---------- Dane i metryki ----------
 
 def extract_prices(df: pd.DataFrame,
                    field_preferred: str = "Adj Close",
                    field_fallback: str = "Close",
                    tickers: list[str] | None = None) -> pd.DataFrame:
-    """Odporne pobranie cen (daty x tickery) z różnych układów kolumn yfinance."""
+    """
+    Odporna ekstrakcja macierzy cen (daty x tickery) dla różnych układów kolumn zwracanych przez yfinance:
+    - MultiIndex [field, ticker]
+    - MultiIndex [ticker, field]
+    - SingleIndex
+    """
     if df is None or df.empty:
         raise RuntimeError("Brak danych (DataFrame pusty).")
+
     cols = df.columns
 
     # MultiIndex: [field, ticker]
@@ -77,23 +90,44 @@ def extract_prices(df: pd.DataFrame,
     raise KeyError(f"Nie znaleziono '{field_preferred}' ani '{field_fallback}'. Kolumny={list(map(str, cols))}")
 
 
-def download_prices(tickers: list[str], start_date: str, auto_adjust: bool = False) -> pd.DataFrame:
-    info(f"Pobieranie danych: {tickers} od {start_date} …")
-    df = yf.download(
-        tickers=tickers,
-        start=start_date,
-        auto_adjust=auto_adjust,  # jeśli True -> Close skorygowany
-        progress=False,
-        group_by="column"
-    )
-    if df is None or df.empty:
-        raise RuntimeError("Brak danych z yfinance.")
+def download_prices(tickers: list[str],
+                    start_date: str,
+                    end_date: str | None = None,
+                    auto_adjust: bool = False,
+                    retries: int = 3,
+                    pause_sec: float = 1.5) -> pd.DataFrame:
+    """
+    Pobiera dane z yfinance z kilkoma próbami (retry).
+    Zwraca DataFrame z cenami (Adj Close preferowane, Close fallback).
+    """
+    info(f"Pobieranie danych: {tickers} od {start_date}{' do ' + end_date if end_date else ''} …")
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            df = yf.download(
+                tickers=tickers,
+                start=start_date,
+                end=end_date,
+                auto_adjust=auto_adjust,   # jeśli True -> Close jest już skorygowany
+                progress=False,
+                group_by="column",
+                threads=True
+            )
+            if df is not None and not df.empty:
+                break
+        except Exception as e:
+            last_exc = e
+        info(f"… próba {attempt}/{retries} nieudana, ponawiam po {pause_sec}s …")
+        time.sleep(pause_sec)
+    else:
+        raise RuntimeError(f"Brak danych z yfinance po {retries} próbach. Ostatni błąd: {last_exc}")
 
     if auto_adjust:
         prices = extract_prices(df, field_preferred="Close", field_fallback="Close", tickers=tickers)
     else:
         prices = extract_prices(df, field_preferred="Adj Close", field_fallback="Close", tickers=tickers)
 
+    # proste czyszczenie
     prices = prices.dropna(how="all")
     min_non_na = max(30, int(0.4 * len(prices)))
     prices = prices.dropna(axis=1, thresh=min_non_na).sort_index(axis=1)
@@ -104,11 +138,13 @@ def download_prices(tickers: list[str], start_date: str, auto_adjust: bool = Fal
 
 
 def hedge_and_spread(a: pd.Series, b: pd.Series) -> tuple[float, float, pd.Series]:
-    """OLS: a ~ const + beta*b → (alpha, beta, spread = a - (alpha + beta*b))."""
+    """
+    OLS: a ~ const + beta * b  → zwraca (alpha, beta, spread = a - (alpha + beta * b))
+    """
     df = pd.concat([a, b], axis=1).dropna()
     df.columns = ["y", "x"]
     if len(df) < 30:
-        raise RuntimeError("Za mało danych do OLS (min 30).")
+        raise RuntimeError("Za mało danych do OLS (min 30 obserwacji).")
     X = sm.add_constant(df["x"])
     model = sm.OLS(df["y"], X).fit()
     alpha = float(model.params.get("const", 0.0))
@@ -153,5 +189,3 @@ def plot_spread(ax, spread: pd.Series, long_sig: pd.Series, short_sig: pd.Series
 
 
 def plot_zscores(ax, z20: pd.Series, z40: pd.Series, z60: pd.Series, title: str):
-    ax.plot(z20.index, z20.values, color="#ff7f0e", label="Z20", linewidth=1.2)
-    ax.plot(z40.index, z40.values, color="#9467bd", label="Z40", linewidth=1.2)
