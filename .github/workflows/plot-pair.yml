@@ -24,21 +24,11 @@ jobs:
           pip install -r requirements.txt
           # awaryjnie doinstaluj matplotlib, jeśli nie ma go w requirements
           python - << 'PY'
-          import importlib, sys
+          import importlib, sys, subprocess
           try:
               importlib.import_module("matplotlib")
           except ImportError:
-              import subprocess
               subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib>=3.7"])
-          PY
-
-      - name: Show environment (debug)
-        run: |
-          python -V
-          python - << 'PY'
-          import matplotlib as m, yfinance as yf, pandas as pd
-          print("matplotlib", m.__version__, "backend", m.get_backend())
-          print("yfinance OK, pandas", pd.__version__)
           PY
 
       - name: Run plotter
