@@ -50,79 +50,74 @@ def load_tickers_from_file(filepath: str) -> List[str]:
     return tickers
 
 
-def download_data(
+def download_data_robust(
     tickers: List[str],
     start_date: str,
     end_date: Optional[str],
     auto_adjust: bool
 ) -> pd.DataFrame:
-    """Download price data via yfinance."""
+    """
+    Download price data via yfinance with robust error handling.
+    Downloads tickers individually to handle delisted/invalid tickers gracefully.
+    """
     logger.info(f"Downloading data for {len(tickers)} tickers from {start_date}")
     logger.info(f"Auto-adjust: {auto_adjust}")
     
-    # Download with error handling
-    try:
-        df = yf.download(
-            tickers,
-            start=start_date,
-            end=end_date,
-            progress=False,
-            auto_adjust=auto_adjust,
-            threads=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to download data: {e}")
+    all_prices = {}
+    failed_tickers = []
+    
+    for ticker in tickers:
+        try:
+            df = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                progress=False,
+                auto_adjust=auto_adjust
+            )
+            
+            if df.empty:
+                failed_tickers.append(ticker)
+                continue
+            
+            # Extract Close or Adj Close
+            if "Close" in df.columns:
+                prices = df["Close"]
+            elif "Adj Close" in df.columns:
+                prices = df["Adj Close"]
+            else:
+                failed_tickers.append(ticker)
+                continue
+            
+            # Check for sufficient data
+            valid_data = prices.dropna()
+            if len(valid_data) < 200:
+                logger.debug(f"{ticker}: insufficient data ({len(valid_data)} days)")
+                failed_tickers.append(ticker)
+                continue
+            
+            all_prices[ticker] = prices
+            
+        except Exception as e:
+            logger.debug(f"{ticker}: download failed - {e}")
+            failed_tickers.append(ticker)
+            continue
+    
+    if len(all_prices) == 0:
+        logger.error("No data downloaded successfully")
         sys.exit(1)
     
-    if df.empty:
-        logger.error("No data downloaded. Check tickers and date range.")
-        sys.exit(1)
+    # Combine into DataFrame
+    prices_df = pd.DataFrame(all_prices)
     
-    # Extract price data based on structure
-    prices = None
+    logger.info(f"Successfully downloaded: {len(prices_df.columns)} tickers")
+    if failed_tickers:
+        logger.warning(f"Failed to download: {len(failed_tickers)} tickers")
+        logger.debug(f"Failed tickers: {', '.join(failed_tickers[:10])}")
     
-    # Case 1: MultiIndex columns (multiple tickers)
-    if isinstance(df.columns, pd.MultiIndex):
-        if "Adj Close" in df.columns.get_level_values(0):
-            prices = df["Adj Close"].copy()
-        elif "Close" in df.columns.get_level_values(0):
-            prices = df["Close"].copy()
-    # Case 2: Single level columns (single ticker or already processed)
-    else:
-        # If columns are price fields, assume single ticker
-        if "Close" in df.columns:
-            prices = df[["Close"]].copy()
-            prices.columns = [tickers[0]] if len(tickers) == 1 else ["Close"]
-        elif "Adj Close" in df.columns:
-            prices = df[["Adj Close"]].copy()
-            prices.columns = [tickers[0]] if len(tickers) == 1 else ["Adj Close"]
-        else:
-            # Assume df is already price data
-            prices = df.copy()
+    logger.info(f"Date range: {prices_df.index.min()} to {prices_df.index.max()}")
     
-    if prices is None:
-        logger.error("Could not extract price data from yfinance response")
-        sys.exit(1)
-    
-    # Drop tickers with all NaN
-    prices = prices.dropna(axis=1, how="all")
-    
-    # Filter out columns that are not in original ticker list (cleanup)
-    valid_cols = [col for col in prices.columns if col in tickers]
-    if len(valid_cols) < len(prices.columns):
-        logger.info(f"Filtering to {len(valid_cols)} valid tickers")
-        prices = prices[valid_cols]
-    
-    if prices.empty or len(prices.columns) < 2:
-        logger.error(f"Insufficient data: only {len(prices.columns)} tickers with valid data (need at least 2)")
-        logger.error(f"Successfully downloaded: {list(prices.columns)}")
-        sys.exit(1)
-    
-    logger.info(f"Successfully downloaded {len(prices.columns)} tickers with data")
-    logger.info(f"Date range: {prices.index.min()} to {prices.index.max()}")
-    logger.info(f"Tickers: {', '.join(sorted(prices.columns.tolist()[:10]))}{'...' if len(prices.columns) > 10 else ''}")
-    
-    return prices
+    return prices_df
 
 
 def compute_returns(prices: pd.DataFrame, use_percent: bool) -> pd.DataFrame:
@@ -261,8 +256,8 @@ def scan_pairs(
             b = tickers[j]
             
             processed += 1
-            if processed % 100 == 0:
-                logger.info(f"Progress: {processed}/{total_pairs} pairs")
+            if processed % 500 == 0:
+                logger.info(f"Progress: {processed}/{total_pairs} pairs ({100*processed/total_pairs:.1f}%)")
             
             # Correlation windows
             try:
@@ -458,8 +453,12 @@ def main():
     coint_lookbacks = [int(x.strip()) for x in args.coint_lookbacks.split(",")]
     logger.info(f"Cointegration lookbacks: {coint_lookbacks}")
     
-    # Download data
-    prices = download_data(tickers, args.start_date, args.end_date, args.auto_adjust)
+    # Download data (robust method)
+    prices = download_data_robust(tickers, args.start_date, args.end_date, args.auto_adjust)
+    
+    if len(prices.columns) < 2:
+        logger.error(f"Insufficient tickers with data: {len(prices.columns)} (need at least 2)")
+        sys.exit(1)
     
     # Compute returns
     returns = compute_returns(prices, args.use_percent_returns)
