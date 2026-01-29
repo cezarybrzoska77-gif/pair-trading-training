@@ -189,3 +189,92 @@ def plot_spread(ax, spread: pd.Series, long_sig: pd.Series, short_sig: pd.Series
 
 
 def plot_zscores(ax, z20: pd.Series, z40: pd.Series, z60: pd.Series, title: str):
+    ax.plot(z20.index, z20.values, color="#ff7f0e", label="Z20", linewidth=1.2)
+    ax.plot(z40.index, z40.values, color="#9467bd", label="Z40", linewidth=1.2)
+    ax.plot(z60.index, z60.values, color="#17becf", label="Z60", linewidth=1.2)
+
+    # Linie referencyjne
+    for level in [2.0, 1.5, 0.0, -1.5, -2.0]:
+        ax.axhline(level, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+
+    ax.set_title(title)
+    ax.set_ylabel("Z-score")
+    ax.legend(loc="best")
+    format_axes_date(ax)
+
+
+# ---------- Główna logika ----------
+
+def main(a: str, b: str, start_date: str, out_dir: str, end_date: str | None, auto_adjust: bool):
+    os.makedirs(out_dir, exist_ok=True)
+
+    prices = download_prices([a, b], start_date=start_date, end_date=end_date, auto_adjust=auto_adjust)
+    A = prices[a].astype(float)
+    B = prices[b].astype(float)
+
+    alpha, beta, spread = hedge_and_spread(A, B)
+    z20 = zscore(spread, 20)
+    z40 = zscore(spread, 40)
+    z60 = zscore(spread, 60)
+
+    # Sygnały (te same zasady co wcześniej)
+    long_sig = (z20 < -2.0) & (z40 < -1.5)
+    short_sig = (z20 >  2.0) & (z40 >  1.5)
+
+    info(f"alpha={alpha:.4f}, beta={beta:.4f}")
+    last_idx = spread.dropna().index[-1]
+    info(f"LAST {last_idx.date()} | Spread={spread.loc[last_idx]:.2f}  "
+         f"Z20={z20.loc[last_idx]:.2f}  Z40={z40.loc[last_idx]:.2f}  Z60={z60.loc[last_idx]:.2f}  "
+         f"Long={bool(long_sig.loc[last_idx])}  Short={bool(short_sig.loc[last_idx])}")
+
+    a_low, b_low = a.lower(), b.lower()
+    spread_path = os.path.join(out_dir, f"{a_low}_{b_low}_spread.png")
+    zscore_path = os.path.join(out_dir, f"{a_low}_{b_low}_zscore.png")
+    combo_path  = os.path.join(out_dir, f"{a_low}_{b_low}_combo.png")
+
+    # Wykres Spread
+    fig1, ax1 = plt.subplots(figsize=(12, 5))
+    plot_spread(ax1, spread, long_sig, short_sig, f"Spread {a} vs {b}")
+    plt.tight_layout()
+    fig1.savefig(spread_path, dpi=130)
+    plt.close(fig1)
+    info(f"Zapisano wykres spread → {spread_path}")
+
+    # Wykres Z-score
+    fig2, ax2 = plt.subplots(figsize=(12, 5))
+    plot_zscores(ax2, z20, z40, z60, f"Z-score (20/40/60) — {a} vs {b}")
+    plt.tight_layout()
+    fig2.savefig(zscore_path, dpi=130)
+    plt.close(fig2)
+    info(f"Zapisano wykres Z-score → {zscore_path}")
+
+    # Combo (2 panele)
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
+                                         gridspec_kw={"height_ratios": [2.0, 1.3]})
+    plot_spread(ax_top, spread, long_sig, short_sig, f"Spread {a} vs {b}  |  alpha={alpha:.2f}, beta={beta:.2f}")
+    plot_zscores(ax_bot, z20, z40, z60, "Z-score (20/40/60) z liniami ±2 / ±1.5")
+    plt.tight_layout()
+    fig.savefig(combo_path, dpi=130)
+    plt.close(fig)
+    info(f"Zapisano wykres łączony → {combo_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Wykres spreadu i Z-score dla wybranej pary.")
+    parser.add_argument("--a", default="KLAC", help="Ticker A (domyślnie KLAC)")
+    parser.add_argument("--b", default="LRCX", help="Ticker B (domyślnie LRCX)")
+    parser.add_argument("--start-date", default="2018-01-01", help="Data początkowa (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default=None, help="Data końcowa (YYYY-MM-DD), opcjonalnie")
+    parser.add_argument("--out-dir", default="results", help="Folder zapisu wykresów (domyślnie 'results')")
+    parser.add_argument("--auto-adjust", action="store_true",
+                        help="Jeśli ustawione → yfinance auto_adjust=True (Close już skorygowany).")
+    args = parser.parse_args()
+
+    main(
+        a=args.a,
+        b=args.b,
+        start_date=args.start_date,
+        out_dir=args.out_dir,
+        end_date=args.end_date,
+        auto_adjust=args.auto_adjust
+    )
