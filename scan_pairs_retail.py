@@ -42,8 +42,8 @@ def load_tickers_from_file(filepath: str) -> List[str]:
         logger.error(f"Tickers file not found: {filepath}")
         sys.exit(1)
     
-    with open(path, "r") as f:
-        tickers = [line.strip().upper() for line in f if line.strip()]
+    with open(path, "r", encoding="utf-8") as f:
+        tickers = [line.strip().upper() for line in f if line.strip() and not line.startswith("#")]
     
     tickers = sorted(list(set(tickers)))  # Remove duplicates
     logger.info(f"Loaded {len(tickers)} unique tickers")
@@ -60,32 +60,67 @@ def download_data(
     logger.info(f"Downloading data for {len(tickers)} tickers from {start_date}")
     logger.info(f"Auto-adjust: {auto_adjust}")
     
-    df = yf.download(
-        tickers,
-        start=start_date,
-        end=end_date,
-        progress=False,
-        auto_adjust=auto_adjust,
-        threads=True
-    )
+    # Download with error handling
+    try:
+        df = yf.download(
+            tickers,
+            start=start_date,
+            end=end_date,
+            progress=False,
+            auto_adjust=auto_adjust,
+            threads=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to download data: {e}")
+        sys.exit(1)
     
     if df.empty:
         logger.error("No data downloaded. Check tickers and date range.")
         sys.exit(1)
     
-    # Extract Adj Close or Close
-    if "Adj Close" in df.columns.get_level_values(0):
-        prices = df["Adj Close"]
-    elif "Close" in df.columns.get_level_values(0):
-        prices = df["Close"]
+    # Extract price data based on structure
+    prices = None
+    
+    # Case 1: MultiIndex columns (multiple tickers)
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Adj Close" in df.columns.get_level_values(0):
+            prices = df["Adj Close"].copy()
+        elif "Close" in df.columns.get_level_values(0):
+            prices = df["Close"].copy()
+    # Case 2: Single level columns (single ticker or already processed)
     else:
-        logger.error("Neither 'Adj Close' nor 'Close' found in downloaded data.")
+        # If columns are price fields, assume single ticker
+        if "Close" in df.columns:
+            prices = df[["Close"]].copy()
+            prices.columns = [tickers[0]] if len(tickers) == 1 else ["Close"]
+        elif "Adj Close" in df.columns:
+            prices = df[["Adj Close"]].copy()
+            prices.columns = [tickers[0]] if len(tickers) == 1 else ["Adj Close"]
+        else:
+            # Assume df is already price data
+            prices = df.copy()
+    
+    if prices is None:
+        logger.error("Could not extract price data from yfinance response")
         sys.exit(1)
     
     # Drop tickers with all NaN
     prices = prices.dropna(axis=1, how="all")
-    logger.info(f"Downloaded {len(prices.columns)} tickers with data")
+    
+    # Filter out columns that are not in original ticker list (cleanup)
+    valid_cols = [col for col in prices.columns if col in tickers]
+    if len(valid_cols) < len(prices.columns):
+        logger.info(f"Filtering to {len(valid_cols)} valid tickers")
+        prices = prices[valid_cols]
+    
+    if prices.empty or len(prices.columns) < 2:
+        logger.error(f"Insufficient data: only {len(prices.columns)} tickers with valid data (need at least 2)")
+        logger.error(f"Successfully downloaded: {list(prices.columns)}")
+        sys.exit(1)
+    
+    logger.info(f"Successfully downloaded {len(prices.columns)} tickers with data")
     logger.info(f"Date range: {prices.index.min()} to {prices.index.max()}")
+    logger.info(f"Tickers: {', '.join(sorted(prices.columns.tolist()[:10]))}{'...' if len(prices.columns) > 10 else ''}")
     
     return prices
 
@@ -98,6 +133,9 @@ def compute_returns(prices: pd.DataFrame, use_percent: bool) -> pd.DataFrame:
     else:
         logger.info("Computing log-returns")
         returns = np.log(prices / prices.shift(1))
+    
+    # Replace inf with NaN
+    returns = returns.replace([np.inf, -np.inf], np.nan)
     
     return returns
 
@@ -185,7 +223,9 @@ def compute_sample_size(
 
 def assign_grade(pvalue: float) -> str:
     """Assign grade based on cointegration p-value."""
-    if pvalue <= 0.05:
+    if np.isnan(pvalue):
+        return "F"
+    elif pvalue <= 0.05:
         return "A"
     elif pvalue <= 0.10:
         return "B"
@@ -208,20 +248,30 @@ def scan_pairs(
     Scan all pairs and compute correlation + cointegration metrics.
     """
     n = len(tickers)
-    logger.info(f"Scanning {n * (n - 1) // 2} pairs")
+    total_pairs = n * (n - 1) // 2
+    logger.info(f"Scanning {total_pairs} pairs from {n} tickers")
     
     results = []
     max_lookback = max(coint_lookbacks)
     
+    processed = 0
     for i in range(n):
         for j in range(i + 1, n):
             a = tickers[i]
             b = tickers[j]
             
+            processed += 1
+            if processed % 100 == 0:
+                logger.info(f"Progress: {processed}/{total_pairs} pairs")
+            
             # Correlation windows
-            corr_60, corr_90, obs_60, obs_90 = compute_correlation_windows(
-                returns, a, b
-            )
+            try:
+                corr_60, corr_90, obs_60, obs_90 = compute_correlation_windows(
+                    returns, a, b
+                )
+            except Exception as e:
+                logger.debug(f"Correlation error for {a}-{b}: {e}")
+                continue
             
             if np.isnan(corr_60) or np.isnan(corr_90):
                 continue
@@ -229,12 +279,21 @@ def scan_pairs(
             corr_mean = (corr_60 + corr_90) / 2.0
             
             # Cointegration
-            coint_stat, coint_pvalue, coint_lb = compute_cointegration_best(
-                prices, a, b, coint_lookbacks
-            )
+            try:
+                coint_stat, coint_pvalue, coint_lb = compute_cointegration_best(
+                    prices, a, b, coint_lookbacks
+                )
+            except Exception as e:
+                logger.debug(f"Cointegration error for {a}-{b}: {e}")
+                coint_stat = np.nan
+                coint_pvalue = 1.0
+                coint_lb = coint_lookbacks[0]
             
             # Sample size
-            sample = compute_sample_size(prices, a, b, max_lookback)
+            try:
+                sample = compute_sample_size(prices, a, b, max_lookback)
+            except Exception:
+                sample = 0
             
             # Grade
             grade = assign_grade(coint_pvalue)
@@ -242,13 +301,13 @@ def scan_pairs(
             results.append({
                 "a": a,
                 "b": b,
-                "corr_60": corr_60,
-                "corr_90": corr_90,
+                "corr_60": round(corr_60, 4),
+                "corr_90": round(corr_90, 4),
                 "corr_obs_60": obs_60,
                 "corr_obs_90": obs_90,
-                "corr_mean": corr_mean,
-                "coint_stat_best": coint_stat,
-                "coint_pvalue_best": coint_pvalue,
+                "corr_mean": round(corr_mean, 4),
+                "coint_stat_best": round(coint_stat, 4) if not np.isnan(coint_stat) else np.nan,
+                "coint_pvalue_best": round(coint_pvalue, 6),
                 "coint_lookback_best": coint_lb,
                 "sample": sample,
                 "grade": grade
@@ -271,6 +330,10 @@ def apply_filters(
     """
     logger.info("Applying filters...")
     
+    if len(df) == 0:
+        logger.warning("Empty dataframe received, returning empty filtered result")
+        return df
+    
     corr_pass = (
         (df["corr_mean"] >= 0.82) |
         ((df["corr_60"] >= 0.84) & (df["corr_90"] >= 0.80))
@@ -290,6 +353,9 @@ def sort_candidates(df: pd.DataFrame) -> pd.DataFrame:
     """
     Sort by: grade (A before B), coint_pvalue (asc), corr_90 (desc), corr_60 (desc).
     """
+    if len(df) == 0:
+        return df
+    
     df = df.sort_values(
         by=["grade", "coint_pvalue_best", "corr_90", "corr_60"],
         ascending=[True, True, False, False]
@@ -373,11 +439,20 @@ def parse_args():
 def main():
     args = parse_args()
     
+    logger.info("=" * 60)
+    logger.info("TECH PAIRS SCANNER - RETAIL MODE")
+    logger.info("=" * 60)
+    
     # Load tickers
     if args.tickers:
         tickers = [t.upper() for t in args.tickers]
+        logger.info(f"Using {len(tickers)} tickers from CLI")
     else:
         tickers = load_tickers_from_file(args.tickers_file)
+    
+    if len(tickers) < 2:
+        logger.error("Need at least 2 tickers to scan pairs")
+        sys.exit(1)
     
     # Parse cointegration lookbacks
     coint_lookbacks = [int(x.strip()) for x in args.coint_lookbacks.split(",")]
@@ -391,24 +466,49 @@ def main():
     
     # Get tickers with valid data
     valid_tickers = sorted(prices.columns.tolist())
+    logger.info(f"Valid tickers for scanning: {len(valid_tickers)}")
     
     # Scan pairs
     all_metrics = scan_pairs(valid_tickers, prices, returns, coint_lookbacks, args.min_sample)
     
-    # Save all metrics
+    # Create output directory
     out_all = Path(args.out_csv).parent / "tech_pairs_all_metrics.csv"
     out_all.parent.mkdir(parents=True, exist_ok=True)
-    all_metrics.to_csv(out_all, index=False)
-    logger.info(f"Saved all metrics: {out_all}")
+    
+    # Handle empty results
+    if len(all_metrics) == 0:
+        logger.warning("No pairs computed. Creating empty output files.")
+        
+        # Create empty DataFrames with proper columns
+        empty_cols = ["a", "b", "corr_60", "corr_90", "corr_obs_60", "corr_obs_90", 
+                      "corr_mean", "coint_stat_best", "coint_pvalue_best", 
+                      "coint_lookback_best", "sample", "grade"]
+        empty_df = pd.DataFrame(columns=empty_cols)
+        
+        empty_df.to_csv(out_all, index=False)
+        empty_df.to_csv(args.out_csv, index=False)
+        
+        logger.info(f"Saved empty files: {out_all}, {args.out_csv}")
+        logger.info("Process completed (0 candidates)")
+        return
+    
+    # Save all metrics
+    try:
+        all_metrics.to_csv(out_all, index=False)
+        logger.info(f"Saved all metrics: {out_all}")
+    except Exception as e:
+        logger.error(f"Failed to save all metrics: {e}")
+        sys.exit(1)
     
     # Apply filters
     candidates = apply_filters(all_metrics, args.min_sample)
     
     if len(candidates) == 0:
         logger.warning("No pairs passed filters!")
-        # Still create empty CSV
+        # Create empty CSV with correct columns
         candidates.to_csv(args.out_csv, index=False)
         logger.info(f"Saved empty candidates CSV: {args.out_csv}")
+        logger.info("Process completed (0 candidates)")
         return
     
     # Sort candidates
@@ -416,11 +516,16 @@ def main():
     
     # Limit to top K
     if len(candidates) > args.topk:
+        logger.info(f"Limiting to top {args.topk} candidates")
         candidates = candidates.head(args.topk)
     
     # Save candidates
-    candidates.to_csv(args.out_csv, index=False)
-    logger.info(f"Saved {len(candidates)} candidates: {args.out_csv}")
+    try:
+        candidates.to_csv(args.out_csv, index=False)
+        logger.info(f"Saved {len(candidates)} candidates: {args.out_csv}")
+    except Exception as e:
+        logger.error(f"Failed to save candidates: {e}")
+        sys.exit(1)
     
     # Summary
     logger.info("=" * 60)
@@ -429,12 +534,22 @@ def main():
     logger.info(f"Total pairs scanned: {len(all_metrics)}")
     logger.info(f"Pairs passing filters: {len(candidates)}")
     if len(candidates) > 0:
-        logger.info(f"Grade A: {len(candidates[candidates['grade'] == 'A'])}")
-        logger.info(f"Grade B: {len(candidates[candidates['grade'] == 'B'])}")
+        grade_counts = candidates["grade"].value_counts()
+        for grade in sorted(grade_counts.index):
+            logger.info(f"  Grade {grade}: {grade_counts[grade]}")
         logger.info("\nTop 5 candidates:")
-        print(candidates.head(5)[["a", "b", "corr_mean", "coint_pvalue_best", "grade"]])
+        top5 = candidates.head(5)[["a", "b", "corr_mean", "coint_pvalue_best", "grade"]]
+        print(top5.to_string(index=False))
     logger.info("=" * 60)
+    logger.info("Process completed successfully")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("\nProcess interrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        sys.exit(1)
