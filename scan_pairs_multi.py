@@ -126,16 +126,6 @@ def log_returns(prices):
     return winsorize(ret)
 
 
-def beta_neutral_spread(p1, p2):
-    """Beta-neutral spread: P1 - beta*P2."""
-    df = pd.DataFrame({"P1": p1, "P2": p2}).dropna()
-    if len(df) < 30:
-        return None
-    beta = np.cov(df["P1"], df["P2"])[0, 1] / np.var(df["P2"])
-    spread = df["P1"] - beta * df["P2"]
-    return spread
-
-
 def correlation_hitrate_30d_6m(r1, r2, threshold=0.80):
     """
     Rolling 30-day correlation over last 6 months.
@@ -235,25 +225,6 @@ def classify_pair(metrics):
         return "B+"
     
     return None
-
-
-def check_stay_criteria(metrics):
-    """Check if pair meets STAY thresholds."""
-    return (
-        metrics["corr_mean"] >= STAY["corr_mean"] and
-        metrics["coint_pvalue_best"] <= STAY["coint_pvalue"] and
-        metrics["corr_hitrate_30d_6m"] >= STAY["hitrate"] and
-        metrics["residual_corr_90"] >= STAY["residual_corr"]
-    )
-
-
-def check_drop_criteria(metrics):
-    """Check if pair meets DROP thresholds."""
-    return (
-        metrics["corr_mean"] < DROP["corr_mean"] or
-        metrics["coint_pvalue_best"] > DROP["coint_pvalue"] or
-        metrics["corr_hitrate_30d_6m"] < DROP["hitrate"]
-    )
 
 
 def compute_global_score(metrics, pair_class):

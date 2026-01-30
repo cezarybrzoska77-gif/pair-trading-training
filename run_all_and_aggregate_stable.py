@@ -32,6 +32,19 @@ PERSISTENCE_FILE = RESULTS_DIR / "persistence_history.csv"
 MIN_PERSISTENCE_DAYS = 5
 DROP_CONSECUTIVE_DAYS = 3
 
+STAY = {
+    "corr_mean": 0.78,
+    "coint_pvalue": 0.14,
+    "hitrate": 0.65,
+    "residual_corr": 0.55
+}
+
+DROP = {
+    "corr_mean": 0.75,
+    "coint_pvalue": 0.18,
+    "hitrate": 0.50
+}
+
 
 # ============================================================================
 # STABILITY TRACKING
@@ -49,6 +62,25 @@ def load_persistence_history():
             "persistence_days", "days_since_last_seen",
             "rolling_class", "drop_counter"
         ])
+
+
+def check_stay_criteria(row):
+    """Check if pair meets STAY thresholds."""
+    return (
+        row.get("corr_mean", 0) >= STAY["corr_mean"] and
+        row.get("coint_pvalue_best", 1) <= STAY["coint_pvalue"] and
+        row.get("corr_hitrate_30d_6m", 0) >= STAY["hitrate"] and
+        row.get("residual_corr_90", 0) >= STAY["residual_corr"]
+    )
+
+
+def check_drop_criteria(row):
+    """Check if pair meets DROP thresholds."""
+    return (
+        row.get("corr_mean", 0) < DROP["corr_mean"] or
+        row.get("coint_pvalue_best", 1) > DROP["coint_pvalue"] or
+        row.get("corr_hitrate_30d_6m", 0) < DROP["hitrate"]
+    )
 
 
 def update_persistence(current_candidates, history_df):
@@ -92,12 +124,11 @@ def update_persistence(current_candidates, history_df):
             # Pair still in scan
             current_row = current_match.iloc[0]
             
-            # Check if meets STAY criteria (simplified - using entry_class as proxy)
-            meets_stay = current_row["entry_class"] in ["A", "B+"]
+            # Check if meets STAY criteria
+            meets_stay = check_stay_criteria(current_row)
             
             # Check if meets DROP criteria
-            from scan_pairs_multi import check_drop_criteria
-            meets_drop = check_drop_criteria(current_row.to_dict())
+            meets_drop = check_drop_criteria(current_row)
             
             if meets_stay:
                 # Continue tracking
@@ -194,6 +225,10 @@ def generate_stable_lists(combined_df, history_df):
         how="left"
     )
     
+    # Fill NaN for new pairs
+    merged["persistence_days"] = merged["persistence_days"].fillna(1)
+    merged["rolling_class"] = merged["rolling_class"].fillna(merged["entry_class"])
+    
     # Stable pairs: persistence >= MIN_PERSISTENCE_DAYS and not dropped
     stable = merged[
         (merged["persistence_days"] >= MIN_PERSISTENCE_DAYS) &
@@ -241,6 +276,7 @@ def save_combined_outputs(stable_df, new_candidates_df, dropped_df, combined_raw
     for universe in UNIVERSES:
         universe_stable = stable_df[stable_df["universe"] == universe].copy()
         stable_file = RESULTS_DIR / universe / f"{universe}_stable.csv"
+        stable_file.parent.mkdir(parents=True, exist_ok=True)
         universe_stable.to_csv(stable_file, index=False)
         print(f"  ✓ {universe}: {len(universe_stable)} stable pairs")
 
