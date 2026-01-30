@@ -30,10 +30,14 @@ def load_tickers(tickers: Optional[List[str]], tickers_file: Optional[str]) -> L
     """Załaduj listę tickerów z argumentów CLI lub pliku."""
     if tickers_file:
         print(f"[INFO] Wczytuję tickery z pliku: {tickers_file}")
-        with open(tickers_file, 'r') as f:
-            file_tickers = [line.strip().upper() for line in f if line.strip()]
-        print(f"[INFO] Załadowano {len(file_tickers)} tickerów")
-        return file_tickers
+        try:
+            with open(tickers_file, 'r') as f:
+                file_tickers = [line.strip().upper() for line in f if line.strip() and not line.startswith('#')]
+            print(f"[INFO] Załadowano {len(file_tickers)} tickerów z pliku")
+            return file_tickers
+        except FileNotFoundError:
+            print(f"[ERROR] Plik {tickers_file} nie istnieje")
+            sys.exit(1)
     elif tickers:
         return [t.upper() for t in tickers]
     else:
@@ -49,13 +53,14 @@ def fetch_price_data(tickers: List[str], start_date: str, end_date: Optional[str
     print(f"[INFO] Pobieranie danych dla {len(tickers)} tickerów od {start_date}...")
     
     try:
-        # Pobierz dane z auto_adjust=True (uproszczona obsługa)
+        # Pobierz dane z auto_adjust=True
         data = yf.download(
             tickers,
             start=start_date,
             end=end_date,
             progress=False,
-            auto_adjust=True
+            auto_adjust=True,
+            threads=True
         )
         
         if data.empty:
@@ -69,6 +74,9 @@ def fetch_price_data(tickers: List[str], start_date: str, end_date: Optional[str
             # Pojedynczy ticker
             if 'Close' in data.columns:
                 prices[tickers[0]] = data['Close']
+            else:
+                print("[ERROR] Brak kolumny 'Close' dla pojedynczego tickera")
+                sys.exit(1)
         else:
             # Wiele tickerów - struktura MultiIndex
             if 'Close' in data.columns:
@@ -86,10 +94,11 @@ def fetch_price_data(tickers: List[str], start_date: str, end_date: Optional[str
         if dropped > 0:
             print(f"[INFO] Usunięto {dropped} tickerów z >60% braków danych")
         
-        print(f"[INFO] Pobrano dane dla {len(prices.columns)} tickerów")
+        print(f"[INFO] Pobrano dane dla {len(prices.columns)} tickerów (po filtrowaniu)")
         
         if len(prices) > 0:
             print(f"[INFO] Zakres dat: {prices.index.min().date()} do {prices.index.max().date()}")
+            print(f"[INFO] Liczba dni notowań: {len(prices)}")
         
         if len(prices.columns) < 2:
             print("[ERROR] Za mało tickerów z wystarczającą ilością danych (minimum 2 wymagane)")
@@ -104,15 +113,24 @@ def fetch_price_data(tickers: List[str], start_date: str, end_date: Optional[str
         sys.exit(1)
 
 
-def calculate_correlation(returns: pd.DataFrame, window: int) -> float:
-    """Oblicz korelację Pearsona dla dwóch kolumn na ostatnich 'window' obserwacjach."""
+def calculate_correlation(returns: pd.DataFrame, window: int) -> Tuple[float, int]:
+    """
+    Oblicz korelację Pearsona dla dwóch kolumn na ostatnich 'window' obserwacjach.
+    Zwraca (korelacja, liczba_obserwacji).
+    """
     if len(returns) < window:
-        return np.nan
-    windowed = returns.tail(window)
+        windowed = returns
+    else:
+        windowed = returns.tail(window)
+    
     valid = windowed.dropna()
-    if len(valid) < max(30, int(window * 0.5)):  # Min 30 obs lub 50% okna
-        return np.nan
-    return valid.iloc[:, 0].corr(valid.iloc[:, 1])
+    n_obs = len(valid)
+    
+    if n_obs < max(30, int(window * 0.5)):  # Min 30 obs lub 50% okna
+        return np.nan, n_obs
+    
+    corr = valid.iloc[:, 0].corr(valid.iloc[:, 1])
+    return corr, n_obs
 
 
 def calculate_cointegration(prices: pd.DataFrame, coint_window: int = 200) -> Tuple[float, float]:
@@ -123,7 +141,11 @@ def calculate_cointegration(prices: pd.DataFrame, coint_window: int = 200) -> Tu
     if len(prices) < 100:
         return np.nan, np.nan
     
-    windowed = prices.tail(coint_window)
+    if len(prices) > coint_window:
+        windowed = prices.tail(coint_window)
+    else:
+        windowed = prices
+    
     valid = windowed.dropna()
     
     if len(valid) < 100:
@@ -169,12 +191,8 @@ def scan_pairs(
         returns = pair_prices.pct_change().dropna()
         
         # Korelacja w dwóch oknach
-        corr_60 = calculate_correlation(returns, 60)
-        corr_90 = calculate_correlation(returns, 90)
-        
-        # Liczba obserwacji w każdym oknie
-        corr_obs_60 = min(len(returns), 60)
-        corr_obs_90 = min(len(returns), 90)
+        corr_60, obs_60 = calculate_correlation(returns, 60)
+        corr_90, obs_90 = calculate_correlation(returns, 90)
         
         # Kointegracja
         coint_stat, coint_pvalue = calculate_cointegration(pair_prices, coint_window=200)
@@ -184,8 +202,8 @@ def scan_pairs(
             'b': ticker_b,
             'corr_60': corr_60,
             'corr_90': corr_90,
-            'corr_obs_60': corr_obs_60,
-            'corr_obs_90': corr_obs_90,
+            'corr_obs_60': obs_60,
+            'corr_obs_90': obs_90,
             'coint_stat': coint_stat,
             'coint_pvalue': coint_pvalue,
             'sample': len(pair_prices)
@@ -219,7 +237,8 @@ def scan_pairs(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Retail Mode Pairs Scanner - XLK Universe"
+        description="Retail Mode Pairs Scanner - XLK Universe",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # Tickery
@@ -228,7 +247,7 @@ def main():
     
     # Daty
     parser.add_argument('--start-date', default='2018-01-01', help='Data początkowa (YYYY-MM-DD)')
-    parser.add_argument('--end-date', help='Data końcowa (opcjonalnie)')
+    parser.add_argument('--end-date', help='Data końcowa (opcjonalnie, domyślnie dzisiaj)')
     
     # Filtry
     parser.add_argument('--corr-threshold', type=float, default=0.80, 
@@ -244,13 +263,37 @@ def main():
     parser.add_argument('--out-csv', default='results/xlk_pairs_candidates.csv',
                        help='Ścieżka do pliku CSV z kandydatami')
     
-    # Kompatybilność wsteczna (mapowanie starych flag)
-    parser.add_argument('--corr-min', type=float, dest='corr_threshold',
-                       help='[PRZESTARZAŁE] Użyj --corr-threshold')
+    # Kompatybilność wsteczna - akceptuj ale ignoruj przestarzałe flagi
+    parser.add_argument('--corr-min', type=float, 
+                       help='[PRZESTARZAŁE] Użyj --corr-threshold zamiast tego')
     parser.add_argument('--corr-lookback', type=int,
-                       help='[PRZESTARZAŁE/IGNOROWANE] Nieużywane w tej wersji')
+                       help='[PRZESTARZAŁE/IGNOROWANE] Nieużywane w retail mode')
+    parser.add_argument('--auto-adjust', action='store_true',
+                       help='[PRZESTARZAŁE/IGNOROWANE] Zawsze używamy auto-adjust=True')
+    parser.add_argument('--coint-lookbacks', type=str,
+                       help='[PRZESTARZAŁE/IGNOROWANE] Używamy stałego okna 200 dni')
     
     args = parser.parse_args()
+    
+    # Mapowanie starych flag na nowe (jeśli podano --corr-min zamiast --corr-threshold)
+    if args.corr_min is not None:
+        print(f"[INFO] Flaga --corr-min jest przestarzała, używam wartości {args.corr_min} jako --corr-threshold")
+        args.corr_threshold = args.corr_min
+    
+    # Informuj o ignorowanych flagach
+    if args.corr_lookback is not None:
+        print(f"[INFO] Flaga --corr-lookback jest ignorowana w retail mode")
+    if args.auto_adjust:
+        print(f"[INFO] Flaga --auto-adjust jest ignorowana (zawsze włączona)")
+    if args.coint_lookbacks is not None:
+        print(f"[INFO] Flaga --coint-lookbacks jest ignorowana (używamy stałego okna 200 dni)")
+    
+    print(f"[INFO] === Retail Mode Pairs Scanner ===")
+    print(f"[INFO] Parametry:")
+    print(f"[INFO]   - Próg korelacji: {args.corr_threshold}")
+    print(f"[INFO]   - Max p-value: {args.pvalue_max}")
+    print(f"[INFO]   - Min próbka: {args.min_sample}")
+    print(f"[INFO]   - Top K: {args.topk}")
     
     # Wczytaj tickery
     tickers = load_tickers(args.tickers, args.tickers_file)
@@ -281,10 +324,13 @@ def main():
     print(f"[INFO] Zapisano wszystkie metryki ({len(all_metrics)} par) do: {all_metrics_path}")
     
     if len(candidates) == 0:
-        print("[WARNING] Brak par spełniających kryteria. Rozważ złagodzenie progów.")
+        print("[WARNING] Brak par spełniających kryteria. Rozważ złagodzenie progów:")
+        print(f"[WARNING]   - Zmniejsz --corr-threshold (obecnie: {args.corr_threshold})")
+        print(f"[WARNING]   - Zwiększ --pvalue-max (obecnie: {args.pvalue_max})")
+        print(f"[WARNING]   - Zmniejsz --min-sample (obecnie: {args.min_sample})")
         sys.exit(0)
     
-    print("[INFO] Skanowanie zakończone pomyślnie!")
+    print("[INFO] === Skanowanie zakończone pomyślnie! ===")
 
 
 if __name__ == '__main__':
