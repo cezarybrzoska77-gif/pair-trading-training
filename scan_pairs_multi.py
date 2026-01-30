@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy import stats
-from statsmodels.tsa.stattools import cointeg
+from statsmodels.tsa.stattools import coint
 
 warnings.filterwarnings('ignore')
 
@@ -403,7 +403,7 @@ def compute_cointegration(
             
             try:
                 # Engle-Granger cointegration test
-                stat, pvalue, _ = cointeg(tail[ticker_a], tail[ticker_b])
+                stat, pvalue, _ = coint(tail[ticker_a], tail[ticker_b])
                 
                 if pvalue < best_pvalue:
                     best_pvalue = pvalue
