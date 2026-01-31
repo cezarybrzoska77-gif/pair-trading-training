@@ -40,12 +40,10 @@ jobs:
         path: state/
     
     - name: Run scanner
-      run: |
-        python scan_pairs_multi.py --universe ${{ matrix.universe }} --start-date 2018-01-01 --auto-adjust --coint-lookbacks 240,300 --min-sample 200 --topk 100
+      run: python scan_pairs_multi.py --universe ${{ matrix.universe }} --start-date 2018-01-01 --auto-adjust --coint-lookbacks 240,300 --min-sample 200 --topk 100
     
     - name: Run stabilization
-      run: |
-        python run_and_stabilize.py --universe ${{ matrix.universe }} --in-csv results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv --state state/${{ matrix.universe }}_history.csv --out-dir results/${{ matrix.universe }}
+      run: python run_and_stabilize.py --universe ${{ matrix.universe }} --in-csv results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv --state state/${{ matrix.universe }}_history.csv --out-dir results/${{ matrix.universe }}
     
     - name: Upload all metrics
       uses: actions/upload-artifact@v4
@@ -112,31 +110,50 @@ jobs:
       with:
         path: artifacts/
     
-    - name: Organize files
+    - name: Organize files for tech_core
       run: |
-        mkdir -p results/tech_core results/semis results/software results/financials results/healthcare results/discretionary
+        mkdir -p results/tech_core
         cp artifacts/tech_core-stable/tech_core_stable.csv results/tech_core/ 2>/dev/null || true
         cp artifacts/tech_core-new/tech_core_new_candidates.csv results/tech_core/ 2>/dev/null || true
         cp artifacts/tech_core-dropped/tech_core_dropped_pairs.csv results/tech_core/ 2>/dev/null || true
+    
+    - name: Organize files for semis
+      run: |
+        mkdir -p results/semis
         cp artifacts/semis-stable/semis_stable.csv results/semis/ 2>/dev/null || true
         cp artifacts/semis-new/semis_new_candidates.csv results/semis/ 2>/dev/null || true
         cp artifacts/semis-dropped/semis_dropped_pairs.csv results/semis/ 2>/dev/null || true
+    
+    - name: Organize files for software
+      run: |
+        mkdir -p results/software
         cp artifacts/software-stable/software_stable.csv results/software/ 2>/dev/null || true
         cp artifacts/software-new/software_new_candidates.csv results/software/ 2>/dev/null || true
         cp artifacts/software-dropped/software_dropped_pairs.csv results/software/ 2>/dev/null || true
+    
+    - name: Organize files for financials
+      run: |
+        mkdir -p results/financials
         cp artifacts/financials-stable/financials_stable.csv results/financials/ 2>/dev/null || true
         cp artifacts/financials-new/financials_new_candidates.csv results/financials/ 2>/dev/null || true
         cp artifacts/financials-dropped/financials_dropped_pairs.csv results/financials/ 2>/dev/null || true
+    
+    - name: Organize files for healthcare
+      run: |
+        mkdir -p results/healthcare
         cp artifacts/healthcare-stable/healthcare_stable.csv results/healthcare/ 2>/dev/null || true
         cp artifacts/healthcare-new/healthcare_new_candidates.csv results/healthcare/ 2>/dev/null || true
         cp artifacts/healthcare-dropped/healthcare_dropped_pairs.csv results/healthcare/ 2>/dev/null || true
+    
+    - name: Organize files for discretionary
+      run: |
+        mkdir -p results/discretionary
         cp artifacts/discretionary-stable/discretionary_stable.csv results/discretionary/ 2>/dev/null || true
         cp artifacts/discretionary-new/discretionary_new_candidates.csv results/discretionary/ 2>/dev/null || true
         cp artifacts/discretionary-dropped/discretionary_dropped_pairs.csv results/discretionary/ 2>/dev/null || true
     
     - name: Run aggregation
-      run: |
-        python run_all_and_aggregate_stable.py --results-dir results --out-dir results
+      run: python run_all_and_aggregate_stable.py --results-dir results --out-dir results
     
     - name: Upload combined scored pairs
       uses: actions/upload-artifact@v4
@@ -167,7 +184,7 @@ jobs:
         retention-days: 90
 ```
 
-I oto wszystkie 6 plików tickerów (każdy jako osobny plik):
+I wszystkie 6 plików tickerów:
 
 **`data/tickers_tech_core.txt`:**
 ```
