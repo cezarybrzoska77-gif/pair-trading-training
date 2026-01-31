@@ -573,19 +573,31 @@ def main():
         log(f"ERROR: Ticker file not found: {ticker_file}")
         sys.exit(1)
     
-    with open(ticker_file, "r") as f:
-        lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    # Load ticker file
+    with open(ticker_file, "r", encoding="utf-8") as f:
+        all_lines = f.readlines()
     
     residual_index = None
     tickers = []
-    for line in lines:
+    
+    for line in all_lines:
+        line = line.strip()
+        if not line:
+            continue
+        
         if line.startswith("#RESIDUAL_INDEX:"):
             residual_index = line.split(":", 1)[1].strip()
+            log(f"Found residual index: {residual_index}")
         elif not line.startswith("#"):
             tickers.append(line)
     
     if not residual_index:
         log(f"ERROR: No #RESIDUAL_INDEX: found in {ticker_file}")
+        log(f"First 5 lines of file:")
+        with open(ticker_file, "r") as f:
+            for i, line in enumerate(f):
+                if i < 5:
+                    log(f"  Line {i+1}: {repr(line)}")
         sys.exit(1)
     
     tickers = list(set(tickers))

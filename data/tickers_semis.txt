@@ -1,6 +1,3 @@
-
-Copy
-
 #RESIDUAL_INDEX:SOXX
 NVDA
 AMD
