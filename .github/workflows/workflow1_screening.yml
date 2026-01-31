@@ -2,8 +2,8 @@ name: Workflow 1 - Multi-Universe Screening
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # Daily at 22:00 UTC
-  workflow_dispatch:  # Manual trigger
+    - cron: '0 22 * * *'
+  workflow_dispatch:
 
 jobs:
   scan-universe:
@@ -32,14 +32,14 @@ jobs:
         mkdir -p results/${{ matrix.universe }}
         mkdir -p state
     
-    - name: Download previous state (if exists)
+    - name: Download previous state
       uses: actions/download-artifact@v4
       continue-on-error: true
       with:
         name: ${{ matrix.universe }}-history-state
         path: state/
     
-    - name: Run scanner for ${{ matrix.universe }}
+    - name: Run scanner
       run: |
         python scan_pairs_multi.py \
           --universe ${{ matrix.universe }} \
@@ -49,7 +49,7 @@ jobs:
           --min-sample 200 \
           --topk 100
     
-    - name: Run stabilization for ${{ matrix.universe }}
+    - name: Run stabilization
       run: |
         python run_and_stabilize.py \
           --universe ${{ matrix.universe }} \
@@ -120,42 +120,30 @@ jobs:
     - name: Create results directory
       run: mkdir -p results
     
-    - name: Download all stable pairs
+    - name: Download stable pairs
       uses: actions/download-artifact@v4
       with:
         pattern: '*-stable'
-        path: results/
-        merge-multiple: false
+        path: results-temp/
     
-    - name: Download all new candidates
+    - name: Download new candidates
       uses: actions/download-artifact@v4
       with:
         pattern: '*-new'
-        path: results/
-        merge-multiple: false
+        path: results-temp/
     
-    - name: Download all dropped pairs
+    - name: Download dropped pairs
       uses: actions/download-artifact@v4
       with:
         pattern: '*-dropped'
-        path: results/
-        merge-multiple: false
+        path: results-temp/
     
-    - name: Reorganize downloaded files
+    - name: Reorganize files
       run: |
-        for universe in tech_core semis software financials healthcare discretionary; do
-          mkdir -p results/${universe}
-          if [ -d "results/${universe}-stable" ]; then
-            mv results/${universe}-stable/${universe}_stable.csv results/${universe}/ 2>/dev/null || true
-          fi
-          if [ -d "results/${universe}-new" ]; then
-            mv results/${universe}-new/${universe}_new_candidates.csv results/${universe}/ 2>/dev/null || true
-          fi
-          if [ -d "results/${universe}-dropped" ]; then
-            mv results/${universe}-dropped/${universe}_dropped_pairs.csv results/${universe}/ 2>/dev/null || true
-          fi
-        done
-        rm -rf results/*-stable results/*-new results/*-dropped
+        mkdir -p results/tech_core results/semis results/software results/financials results/healthcare results/discretionary
+        find results-temp -name "*_stable.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-stable//")/$(basename "$1")"' _ {} \;
+        find results-temp -name "*_new_candidates.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-new//")/$(basename "$1")"' _ {} \;
+        find results-temp -name "*_dropped_pairs.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-dropped//")/$(basename "$1")"' _ {} \;
     
     - name: Run aggregation
       run: |
@@ -192,7 +180,9 @@ jobs:
         retention-days: 90
 ```
 
-## 5. `data/tickers_tech_core.txt`
+I oto wszystkie 6 plików tickerów (każdy jako osobny plik):
+
+**`data/tickers_tech_core.txt`:**
 ```
 AAPL
 MSFT
@@ -262,7 +252,7 @@ AKAM
 VRSN
 ```
 
-## 6. `data/tickers_semis.txt`
+**`data/tickers_semis.txt`:**
 ```
 NVDA
 AMD
@@ -334,7 +324,7 @@ FNSR
 AAOI
 ```
 
-## 7. `data/tickers_software.txt`
+**`data/tickers_software.txt`:**
 ```
 MSFT
 ORCL
@@ -400,7 +390,7 @@ UBER
 LYFT
 ```
 
-## 8. `data/tickers_financials.txt`
+**`data/tickers_financials.txt`:**
 ```
 JPM
 BAC
@@ -465,7 +455,7 @@ AXS
 VOYA
 ```
 
-## 9. `data/tickers_healthcare.txt`
+**`data/tickers_healthcare.txt`:**
 ```
 UNH
 LLY
@@ -536,7 +526,7 @@ PRGO
 PBH
 ```
 
-## 10. `data/tickers_discretionary.txt`
+**`data/tickers_discretionary.txt`:**
 ```
 AMZN
 TSLA
