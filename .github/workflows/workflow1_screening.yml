@@ -110,47 +110,28 @@ jobs:
       with:
         path: artifacts/
     
-    - name: Organize files for tech_core
+    - name: Organize files
+      shell: bash
       run: |
-        mkdir -p results/tech_core
-        if [ -f artifacts/tech_core-stable/tech_core_stable.csv ]; then cp artifacts/tech_core-stable/tech_core_stable.csv results/tech_core/; fi
-        if [ -f artifacts/tech_core-new/tech_core_new_candidates.csv ]; then cp artifacts/tech_core-new/tech_core_new_candidates.csv results/tech_core/; fi
-        if [ -f artifacts/tech_core-dropped/tech_core_dropped_pairs.csv ]; then cp artifacts/tech_core-dropped/tech_core_dropped_pairs.csv results/tech_core/; fi
-    
-    - name: Organize files for semis
-      run: |
-        mkdir -p results/semis
-        if [ -f artifacts/semis-stable/semis_stable.csv ]; then cp artifacts/semis-stable/semis_stable.csv results/semis/; fi
-        if [ -f artifacts/semis-new/semis_new_candidates.csv ]; then cp artifacts/semis-new/semis_new_candidates.csv results/semis/; fi
-        if [ -f artifacts/semis-dropped/semis_dropped_pairs.csv ]; then cp artifacts/semis-dropped/semis_dropped_pairs.csv results/semis/; fi
-    
-    - name: Organize files for software
-      run: |
-        mkdir -p results/software
-        if [ -f artifacts/software-stable/software_stable.csv ]; then cp artifacts/software-stable/software_stable.csv results/software/; fi
-        if [ -f artifacts/software-new/software_new_candidates.csv ]; then cp artifacts/software-new/software_new_candidates.csv results/software/; fi
-        if [ -f artifacts/software-dropped/software_dropped_pairs.csv ]; then cp artifacts/software-dropped/software_dropped_pairs.csv results/software/; fi
-    
-    - name: Organize files for financials
-      run: |
-        mkdir -p results/financials
-        if [ -f artifacts/financials-stable/financials_stable.csv ]; then cp artifacts/financials-stable/financials_stable.csv results/financials/; fi
-        if [ -f artifacts/financials-new/financials_new_candidates.csv ]; then cp artifacts/financials-new/financials_new_candidates.csv results/financials/; fi
-        if [ -f artifacts/financials-dropped/financials_dropped_pairs.csv ]; then cp artifacts/financials-dropped/financials_dropped_pairs.csv results/financials/; fi
-    
-    - name: Organize files for healthcare
-      run: |
-        mkdir -p results/healthcare
-        if [ -f artifacts/healthcare-stable/healthcare_stable.csv ]; then cp artifacts/healthcare-stable/healthcare_stable.csv results/healthcare/; fi
-        if [ -f artifacts/healthcare-new/healthcare_new_candidates.csv ]; then cp artifacts/healthcare-new/healthcare_new_candidates.csv results/healthcare/; fi
-        if [ -f artifacts/healthcare-dropped/healthcare_dropped_pairs.csv ]; then cp artifacts/healthcare-dropped/healthcare_dropped_pairs.csv results/healthcare/; fi
-    
-    - name: Organize files for discretionary
-      run: |
-        mkdir -p results/discretionary
-        if [ -f artifacts/discretionary-stable/discretionary_stable.csv ]; then cp artifacts/discretionary-stable/discretionary_stable.csv results/discretionary/; fi
-        if [ -f artifacts/discretionary-new/discretionary_new_candidates.csv ]; then cp artifacts/discretionary-new/discretionary_new_candidates.csv results/discretionary/; fi
-        if [ -f artifacts/discretionary-dropped/discretionary_dropped_pairs.csv ]; then cp artifacts/discretionary-dropped/discretionary_dropped_pairs.csv results/discretionary/; fi
+        mkdir -p results/tech_core results/semis results/software results/financials results/healthcare results/discretionary
+        test -f artifacts/tech_core-stable/tech_core_stable.csv && cp artifacts/tech_core-stable/tech_core_stable.csv results/tech_core/ || true
+        test -f artifacts/tech_core-new/tech_core_new_candidates.csv && cp artifacts/tech_core-new/tech_core_new_candidates.csv results/tech_core/ || true
+        test -f artifacts/tech_core-dropped/tech_core_dropped_pairs.csv && cp artifacts/tech_core-dropped/tech_core_dropped_pairs.csv results/tech_core/ || true
+        test -f artifacts/semis-stable/semis_stable.csv && cp artifacts/semis-stable/semis_stable.csv results/semis/ || true
+        test -f artifacts/semis-new/semis_new_candidates.csv && cp artifacts/semis-new/semis_new_candidates.csv results/semis/ || true
+        test -f artifacts/semis-dropped/semis_dropped_pairs.csv && cp artifacts/semis-dropped/semis_dropped_pairs.csv results/semis/ || true
+        test -f artifacts/software-stable/software_stable.csv && cp artifacts/software-stable/software_stable.csv results/software/ || true
+        test -f artifacts/software-new/software_new_candidates.csv && cp artifacts/software-new/software_new_candidates.csv results/software/ || true
+        test -f artifacts/software-dropped/software_dropped_pairs.csv && cp artifacts/software-dropped/software_dropped_pairs.csv results/software/ || true
+        test -f artifacts/financials-stable/financials_stable.csv && cp artifacts/financials-stable/financials_stable.csv results/financials/ || true
+        test -f artifacts/financials-new/financials_new_candidates.csv && cp artifacts/financials-new/financials_new_candidates.csv results/financials/ || true
+        test -f artifacts/financials-dropped/financials_dropped_pairs.csv && cp artifacts/financials-dropped/financials_dropped_pairs.csv results/financials/ || true
+        test -f artifacts/healthcare-stable/healthcare_stable.csv && cp artifacts/healthcare-stable/healthcare_stable.csv results/healthcare/ || true
+        test -f artifacts/healthcare-new/healthcare_new_candidates.csv && cp artifacts/healthcare-new/healthcare_new_candidates.csv results/healthcare/ || true
+        test -f artifacts/healthcare-dropped/healthcare_dropped_pairs.csv && cp artifacts/healthcare-dropped/healthcare_dropped_pairs.csv results/healthcare/ || true
+        test -f artifacts/discretionary-stable/discretionary_stable.csv && cp artifacts/discretionary-stable/discretionary_stable.csv results/discretionary/ || true
+        test -f artifacts/discretionary-new/discretionary_new_candidates.csv && cp artifacts/discretionary-new/discretionary_new_candidates.csv results/discretionary/ || true
+        test -f artifacts/discretionary-dropped/discretionary_dropped_pairs.csv && cp artifacts/discretionary-dropped/discretionary_dropped_pairs.csv results/discretionary/ || true
     
     - name: Run aggregation
       run: python run_all_and_aggregate_stable.py --results-dir results --out-dir results
