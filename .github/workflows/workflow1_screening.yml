@@ -41,21 +41,11 @@ jobs:
     
     - name: Run scanner
       run: |
-        python scan_pairs_multi.py \
-          --universe ${{ matrix.universe }} \
-          --start-date 2018-01-01 \
-          --auto-adjust \
-          --coint-lookbacks 240,300 \
-          --min-sample 200 \
-          --topk 100
+        python scan_pairs_multi.py --universe ${{ matrix.universe }} --start-date 2018-01-01 --auto-adjust --coint-lookbacks 240,300 --min-sample 200 --topk 100
     
     - name: Run stabilization
       run: |
-        python run_and_stabilize.py \
-          --universe ${{ matrix.universe }} \
-          --in-csv results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv \
-          --state state/${{ matrix.universe }}_history.csv \
-          --out-dir results/${{ matrix.universe }}
+        python run_and_stabilize.py --universe ${{ matrix.universe }} --in-csv results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv --state state/${{ matrix.universe }}_history.csv --out-dir results/${{ matrix.universe }}
     
     - name: Upload all metrics
       uses: actions/upload-artifact@v4
@@ -117,39 +107,36 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Create results directory
-      run: mkdir -p results
-    
-    - name: Download stable pairs
+    - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
-        pattern: '*-stable'
-        path: results-temp/
+        path: artifacts/
     
-    - name: Download new candidates
-      uses: actions/download-artifact@v4
-      with:
-        pattern: '*-new'
-        path: results-temp/
-    
-    - name: Download dropped pairs
-      uses: actions/download-artifact@v4
-      with:
-        pattern: '*-dropped'
-        path: results-temp/
-    
-    - name: Reorganize files
+    - name: Organize files
       run: |
         mkdir -p results/tech_core results/semis results/software results/financials results/healthcare results/discretionary
-        find results-temp -name "*_stable.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-stable//")/$(basename "$1")"' _ {} \;
-        find results-temp -name "*_new_candidates.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-new//")/$(basename "$1")"' _ {} \;
-        find results-temp -name "*_dropped_pairs.csv" -exec sh -c 'cp "$1" "results/$(basename $(dirname "$1") | sed "s/-dropped//")/$(basename "$1")"' _ {} \;
+        cp artifacts/tech_core-stable/tech_core_stable.csv results/tech_core/ 2>/dev/null || true
+        cp artifacts/tech_core-new/tech_core_new_candidates.csv results/tech_core/ 2>/dev/null || true
+        cp artifacts/tech_core-dropped/tech_core_dropped_pairs.csv results/tech_core/ 2>/dev/null || true
+        cp artifacts/semis-stable/semis_stable.csv results/semis/ 2>/dev/null || true
+        cp artifacts/semis-new/semis_new_candidates.csv results/semis/ 2>/dev/null || true
+        cp artifacts/semis-dropped/semis_dropped_pairs.csv results/semis/ 2>/dev/null || true
+        cp artifacts/software-stable/software_stable.csv results/software/ 2>/dev/null || true
+        cp artifacts/software-new/software_new_candidates.csv results/software/ 2>/dev/null || true
+        cp artifacts/software-dropped/software_dropped_pairs.csv results/software/ 2>/dev/null || true
+        cp artifacts/financials-stable/financials_stable.csv results/financials/ 2>/dev/null || true
+        cp artifacts/financials-new/financials_new_candidates.csv results/financials/ 2>/dev/null || true
+        cp artifacts/financials-dropped/financials_dropped_pairs.csv results/financials/ 2>/dev/null || true
+        cp artifacts/healthcare-stable/healthcare_stable.csv results/healthcare/ 2>/dev/null || true
+        cp artifacts/healthcare-new/healthcare_new_candidates.csv results/healthcare/ 2>/dev/null || true
+        cp artifacts/healthcare-dropped/healthcare_dropped_pairs.csv results/healthcare/ 2>/dev/null || true
+        cp artifacts/discretionary-stable/discretionary_stable.csv results/discretionary/ 2>/dev/null || true
+        cp artifacts/discretionary-new/discretionary_new_candidates.csv results/discretionary/ 2>/dev/null || true
+        cp artifacts/discretionary-dropped/discretionary_dropped_pairs.csv results/discretionary/ 2>/dev/null || true
     
     - name: Run aggregation
       run: |
-        python run_all_and_aggregate_stable.py \
-          --results-dir results \
-          --out-dir results
+        python run_all_and_aggregate_stable.py --results-dir results --out-dir results
     
     - name: Upload combined scored pairs
       uses: actions/upload-artifact@v4
