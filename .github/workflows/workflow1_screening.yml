@@ -23,11 +23,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
+      - name: Verify ticker files exist
+        run: |
+          echo "=== Checking for ticker files ==="
+          ls -lah data/
+          if [ ! -f "data/tickers_${{ matrix.universe }}.txt" ]; then
+            echo "ERROR: data/tickers_${{ matrix.universe }}.txt NOT FOUND"
+            exit 1
+          fi
+          echo "✓ Ticker file found for ${{ matrix.universe }}"
+          head -5 data/tickers_${{ matrix.universe }}.txt
+      
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # Usuń cache - nie jest krytyczny dla codziennego job
       
       - name: Install dependencies
         run: |
@@ -42,6 +52,12 @@ jobs:
       - name: Run screening for ${{ matrix.universe }}
         run: |
           python scan_pairs_multi.py --universe ${{ matrix.universe }} --lookback 365 --min_sample 200
+      
+      - name: Verify outputs
+        run: |
+          echo "=== Checking outputs ==="
+          ls -lah results/${{ matrix.universe }}/ || echo "No universe directory"
+          ls -lah results/persistence/ || echo "No persistence directory"
       
       - name: Upload results for ${{ matrix.universe }}
         uses: actions/upload-artifact@v4
@@ -89,6 +105,7 @@ jobs:
           pattern: results-*
           path: results/
           merge-multiple: true
+        continue-on-error: true
       
       - name: Download all persistence files
         uses: actions/download-artifact@v4
@@ -96,17 +113,19 @@ jobs:
           pattern: persistence-*
           path: results/persistence/
           merge-multiple: true
+        continue-on-error: true
       
-      - name: List downloaded files (debug)
+      - name: List downloaded files
         run: |
           echo "=== Results directory structure ==="
-          find results -type f -name "*.csv" | head -20
+          find results -type f -name "*.csv" 2>/dev/null | head -30 || echo "No CSV files found"
           echo "=== Persistence directory ==="
-          ls -lah results/persistence/
+          ls -lah results/persistence/ || echo "No persistence files"
       
       - name: Run aggregator
         run: |
           python run_all_and_aggregate_stable.py
+        continue-on-error: true
       
       - name: Upload combined results
         uses: actions/upload-artifact@v4
@@ -130,6 +149,8 @@ jobs:
           if [ -f results/combined_pairs_scored.csv ]; then
             TOTAL_PAIRS=$(tail -n +2 results/combined_pairs_scored.csv | wc -l)
             echo "✅ **Total Candidate Pairs**: $TOTAL_PAIRS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **No combined results generated**" >> $GITHUB_STEP_SUMMARY
           fi
           
           if [ -f results/combined_top150_watchlist.csv ]; then
@@ -153,15 +174,7 @@ jobs:
             if [ -f results/$univ/${univ}_candidates.csv ]; then
               COUNT=$(tail -n +2 results/$univ/${univ}_candidates.csv | wc -l)
               echo "- **$univ**: $COUNT candidates" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **$univ**: ❌ No results" >> $GITHUB_STEP_SUMMARY
             fi
           done
-      
-      - name: Commit and push results
-        if: github.event_name == 'schedule'
-        run: |
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
-          git add results/
-          git diff --staged --quiet || git commit -m "Auto-update: Workflow 1 screening results $(date -u +%Y-%m-%d)"
-          git push || echo "Nothing to push or push failed"
-        continue-on-error: true
