@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Retail Mode Scanner - Multi-Universe Support
+Retail Mode Scanner - Single Basket (Discretionary/XLY)
 Calculates correlations, Spearman, residual correlation, cointegration, and scoring.
-Supports multiple universes with different indices.
+Outputs two CSV files: all metrics and filtered candidates (A/B+).
 """
 
 import argparse
@@ -19,34 +19,16 @@ from scipy import stats
 from statsmodels.tsa.stattools import coint
 
 
-# Universe to index mapping
-UNIVERSE_INDICES = {
-    "tech_core": "QQQ",
-    "semis": "SOXX",
-    "software": "IGV",
-    "financials": "XLF",
-    "healthcare": "XLV",
-    "discretionary": "XLY"
-}
-
-
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Scan pairs for multiple universes with correlations, cointegration, and scoring"
-    )
-    parser.add_argument(
-        "--universe",
-        type=str,
-        choices=["tech_core", "semis", "software", "financials", "healthcare", "discretionary"],
-        required=True,
-        help="Universe to scan",
+        description="Scan pairs for single basket with correlations, cointegration, and scoring"
     )
     parser.add_argument(
         "--tickers-file",
         type=str,
-        default=None,
-        help="Path to file with ticker symbols (default: data/tickers_{universe}.txt)",
+        default="data/tickers_discretionary.txt",
+        help="Path to file with ticker symbols (one per line)",
     )
     parser.add_argument(
         "--start-date",
@@ -105,20 +87,10 @@ def parse_args():
     parser.add_argument(
         "--out-dir",
         type=str,
-        default=None,
-        help="Output directory for results (default: results/{universe})",
+        default="results/discretionary",
+        help="Output directory for results (default: results/discretionary)",
     )
-    
-    args = parser.parse_args()
-    
-    # Set defaults based on universe
-    if args.tickers_file is None:
-        args.tickers_file = f"data/tickers_{args.universe}.txt"
-    
-    if args.out_dir is None:
-        args.out_dir = f"results/{args.universe}"
-    
-    return args
+    return parser.parse_args()
 
 
 def load_tickers(filepath: str) -> List[str]:
@@ -476,11 +448,6 @@ def main():
     """Main execution function."""
     args = parse_args()
     
-    print(f"\n{'='*60}")
-    print(f"Scanning universe: {args.universe.upper()}")
-    print(f"Index: {UNIVERSE_INDICES[args.universe]}")
-    print(f"{'='*60}\n")
-    
     # Parse cointegration lookbacks
     coint_lookbacks = [int(x.strip()) for x in args.coint_lookbacks.split(",")]
     
@@ -493,8 +460,8 @@ def main():
     # Calculate returns
     returns = calculate_returns(prices, args.use_percent_returns, args.winsorize)
     
-    # Get index ticker for this universe
-    index_ticker = UNIVERSE_INDICES[args.universe]
+    # Determine index ticker (hardcoded for discretionary basket)
+    index_ticker = "XLY"
     
     # Scan pairs
     results_df = scan_pairs(
@@ -515,7 +482,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     
     # Save all metrics
-    all_metrics_path = os.path.join(args.out_dir, f"{args.universe}_all_metrics.csv")
+    all_metrics_path = os.path.join(args.out_dir, "discretionary_all_metrics.csv")
     results_df.to_csv(all_metrics_path, index=False)
     print(f"Saved all metrics to {all_metrics_path}")
     
@@ -532,19 +499,25 @@ def main():
         )
         candidates_df = candidates_df.drop(columns=["grade_order"])
         
-        candidates_path = os.path.join(args.out_dir, f"{args.universe}_candidates.csv")
+        candidates_path = os.path.join(args.out_dir, "discretionary_candidates.csv")
         candidates_df.to_csv(candidates_path, index=False)
         print(f"Saved {len(candidates_df)} candidates to {candidates_path}")
         print(f"  Grade A: {len(candidates_df[candidates_df['grade'] == 'A'])}")
         print(f"  Grade B+: {len(candidates_df[candidates_df['grade'] == 'B+'])}")
     else:
         print("No A or B+ candidates found")
-        # Create empty file to avoid workflow errors
-        candidates_path = os.path.join(args.out_dir, f"{args.universe}_candidates.csv")
-        pd.DataFrame(columns=results_df.columns).to_csv(candidates_path, index=False)
     
-    print(f"\nScan complete for {args.universe}!")
+    print("Scan complete!")
 
 
 if __name__ == "__main__":
     main()
+```
+
+## 2. `requirements.txt`
+```
+numpy>=1.24.0
+pandas>=2.0.0
+statsmodels>=0.14.0
+yfinance>=0.2.28
+scipy>=1.10.0

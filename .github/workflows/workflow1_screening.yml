@@ -1,180 +1,623 @@
-name: Workflow 1 - Pairs Screening
+name: Workflow 1 - Multi-Universe Screening
 
 on:
   schedule:
-    - cron: '0 22 * * *'
-  workflow_dispatch:
+    - cron: '0 22 * * *'  # Daily at 22:00 UTC
+  workflow_dispatch:  # Manual trigger
 
 jobs:
-  screen_pairs:
+  scan-universe:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        universe:
-          - tech_core
-          - semis
-          - software
-          - financials
-          - healthcare
-          - discretionary
-      fail-fast: false
+        universe: [tech_core, semis, software, financials, healthcare, discretionary]
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Verify ticker files exist
-        run: |
-          echo "=== Checking for ticker files ==="
-          ls -lah data/
-          if [ ! -f "data/tickers_${{ matrix.universe }}.txt" ]; then
-            echo "ERROR: data/tickers_${{ matrix.universe }}.txt NOT FOUND"
-            exit 1
-          fi
-          echo "✓ Ticker file found for ${{ matrix.universe }}"
-          head -5 data/tickers_${{ matrix.universe }}.txt
-      
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Create results directory structure
-        run: |
-          mkdir -p results/${{ matrix.universe }}
-          mkdir -p results/persistence
-      
-      - name: Run screening for ${{ matrix.universe }}
-        run: |
-          python scan_pairs_multi.py --universe ${{ matrix.universe }} --lookback 365 --min_sample 200
-      
-      - name: Verify outputs
-        run: |
-          echo "=== Checking outputs ==="
-          ls -lah results/${{ matrix.universe }}/ || echo "No universe directory"
-          ls -lah results/persistence/ || echo "No persistence directory"
-      
-      - name: Upload results for ${{ matrix.universe }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: results-${{ matrix.universe }}
-          path: results/${{ matrix.universe }}/
-          retention-days: 30
-          if-no-files-found: warn
-      
-      - name: Upload persistence tracking
-        uses: actions/upload-artifact@v4
-        with:
-          name: persistence-${{ matrix.universe }}
-          path: results/persistence/${{ matrix.universe }}_persistence.csv
-          retention-days: 90
-          if-no-files-found: warn
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create directories
+      run: |
+        mkdir -p data
+        mkdir -p results/${{ matrix.universe }}
+        mkdir -p state
+    
+    - name: Download previous state (if exists)
+      uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        name: ${{ matrix.universe }}-history-state
+        path: state/
+    
+    - name: Run scanner for ${{ matrix.universe }}
+      run: |
+        python scan_pairs_multi.py \
+          --universe ${{ matrix.universe }} \
+          --start-date 2018-01-01 \
+          --auto-adjust \
+          --coint-lookbacks 240,300 \
+          --min-sample 200 \
+          --topk 100
+    
+    - name: Run stabilization for ${{ matrix.universe }}
+      run: |
+        python run_and_stabilize.py \
+          --universe ${{ matrix.universe }} \
+          --in-csv results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv \
+          --state state/${{ matrix.universe }}_history.csv \
+          --out-dir results/${{ matrix.universe }}
+    
+    - name: Upload all metrics
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-all-metrics
+        path: results/${{ matrix.universe }}/${{ matrix.universe }}_all_metrics.csv
+        retention-days: 30
+    
+    - name: Upload candidates
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-candidates
+        path: results/${{ matrix.universe }}/${{ matrix.universe }}_candidates.csv
+        retention-days: 30
+    
+    - name: Upload stable pairs
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-stable
+        path: results/${{ matrix.universe }}/${{ matrix.universe }}_stable.csv
+        retention-days: 30
+    
+    - name: Upload new candidates
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-new
+        path: results/${{ matrix.universe }}/${{ matrix.universe }}_new_candidates.csv
+        retention-days: 30
+    
+    - name: Upload dropped pairs
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-dropped
+        path: results/${{ matrix.universe }}/${{ matrix.universe }}_dropped_pairs.csv
+        retention-days: 30
+    
+    - name: Upload history state
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.universe }}-history-state
+        path: state/${{ matrix.universe }}_history.csv
+        retention-days: 90
 
-  aggregate_and_generate:
+  aggregate:
     runs-on: ubuntu-latest
-    needs: screen_pairs
-    if: always()
+    needs: scan-universe
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas
-      
-      - name: Create results directory structure
-        run: |
-          mkdir -p results
-          mkdir -p results/persistence
-      
-      - name: Download all universe results
-        uses: actions/download-artifact@v4
-        with:
-          pattern: results-*
-          path: results/
-          merge-multiple: true
-        continue-on-error: true
-      
-      - name: Download all persistence files
-        uses: actions/download-artifact@v4
-        with:
-          pattern: persistence-*
-          path: results/persistence/
-          merge-multiple: true
-        continue-on-error: true
-      
-      - name: List downloaded files
-        run: |
-          echo "=== Results directory structure ==="
-          find results -type f -name "*.csv" 2>/dev/null | head -30 || echo "No CSV files found"
-          echo "=== Persistence directory ==="
-          ls -lah results/persistence/ || echo "No persistence files"
-      
-      - name: Run aggregator
-        run: |
-          python run_all_and_aggregate_stable.py
-        continue-on-error: true
-      
-      - name: Upload combined results
-        uses: actions/upload-artifact@v4
-        with:
-          name: combined-results
-          path: |
-            results/combined_pairs_scored.csv
-            results/combined_top150_watchlist.csv
-            results/new_candidates.csv
-            results/dropped_pairs.csv
-          retention-days: 90
-          if-no-files-found: warn
-      
-      - name: Generate summary report
-        run: |
-          echo "## Workflow 1 Screening Summary" > $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create results directory
+      run: mkdir -p results
+    
+    - name: Download all stable pairs
+      uses: actions/download-artifact@v4
+      with:
+        pattern: '*-stable'
+        path: results/
+        merge-multiple: false
+    
+    - name: Download all new candidates
+      uses: actions/download-artifact@v4
+      with:
+        pattern: '*-new'
+        path: results/
+        merge-multiple: false
+    
+    - name: Download all dropped pairs
+      uses: actions/download-artifact@v4
+      with:
+        pattern: '*-dropped'
+        path: results/
+        merge-multiple: false
+    
+    - name: Reorganize downloaded files
+      run: |
+        # Move files from artifact directories to universe directories
+        for universe in tech_core semis software financials healthcare discretionary; do
+          mkdir -p results/${universe}
           
-          if [ -f results/combined_pairs_scored.csv ]; then
-            TOTAL_PAIRS=$(tail -n +2 results/combined_pairs_scored.csv | wc -l)
-            echo "✅ **Total Candidate Pairs**: $TOTAL_PAIRS" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **No combined results generated**" >> $GITHUB_STEP_SUMMARY
+          # Move stable files
+          if [ -d "results/${universe}-stable" ]; then
+            mv results/${universe}-stable/${universe}_stable.csv results/${universe}/ 2>/dev/null || true
           fi
           
-          if [ -f results/combined_top150_watchlist.csv ]; then
-            TOP_PAIRS=$(tail -n +2 results/combined_top150_watchlist.csv | wc -l)
-            echo "✅ **Top Watchlist Pairs**: $TOP_PAIRS" >> $GITHUB_STEP_SUMMARY
+          # Move new candidates
+          if [ -d "results/${universe}-new" ]; then
+            mv results/${universe}-new/${universe}_new_candidates.csv results/${universe}/ 2>/dev/null || true
           fi
           
-          if [ -f results/new_candidates.csv ]; then
-            NEW_PAIRS=$(tail -n +2 results/new_candidates.csv | wc -l)
-            echo "🆕 **New Candidates**: $NEW_PAIRS" >> $GITHUB_STEP_SUMMARY
+          # Move dropped pairs
+          if [ -d "results/${universe}-dropped" ]; then
+            mv results/${universe}-dropped/${universe}_dropped_pairs.csv results/${universe}/ 2>/dev/null || true
           fi
-          
-          if [ -f results/dropped_pairs.csv ]; then
-            DROPPED_PAIRS=$(tail -n +2 results/dropped_pairs.csv | wc -l)
-            echo "⬇️ **Dropped Pairs**: $DROPPED_PAIRS" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Universe Breakdown" >> $GITHUB_STEP_SUMMARY
-          for univ in tech_core semis software financials healthcare discretionary; do
-            if [ -f results/$univ/${univ}_candidates.csv ]; then
-              COUNT=$(tail -n +2 results/$univ/${univ}_candidates.csv | wc -l)
-              echo "- **$univ**: $COUNT candidates" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "- **$univ**: ❌ No results" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+        done
+        
+        # Clean up artifact directories
+        rm -rf results/*-stable results/*-new results/*-dropped
+    
+    - name: Run aggregation
+      run: |
+        python run_all_and_aggregate_stable.py \
+          --results-dir results \
+          --out-dir results
+    
+    - name: Upload combined scored pairs
+      uses: actions/upload-artifact@v4
+      with:
+        name: combined-pairs-scored
+        path: results/combined_pairs_scored.csv
+        retention-days: 90
+    
+    - name: Upload combined top 150 watchlist
+      uses: actions/upload-artifact@v4
+      with:
+        name: combined-top150-watchlist
+        path: results/combined_top150_watchlist.csv
+        retention-days: 90
+    
+    - name: Upload combined new candidates
+      uses: actions/upload-artifact@v4
+      with:
+        name: combined-new-candidates
+        path: results/combined_new_candidates.csv
+        retention-days: 90
+    
+    - name: Upload combined dropped pairs
+      uses: actions/upload-artifact@v4
+      with:
+        name: combined-dropped-pairs
+        path: results/combined_dropped_pairs.csv
+        retention-days: 90
+```
+
+## 5. `data/tickers_tech_core.txt`
+```
+AAPL
+MSFT
+NVDA
+GOOGL
+GOOG
+META
+AVGO
+CSCO
+ADBE
+CRM
+AMD
+INTC
+NOW
+ORCL
+QCOM
+IBM
+TXN
+INTU
+AMAT
+MU
+ADI
+LRCX
+KLAC
+SNPS
+CDNS
+MCHP
+FTNT
+PANW
+CRWD
+WDAY
+TEAM
+ADSK
+ZS
+DDOG
+NET
+SNOW
+MDB
+PLTR
+DELL
+HPQ
+HPE
+NTAP
+STX
+WDC
+ZBRA
+APH
+TEL
+GLW
+KEYS
+FSLR
+ENPH
+ON
+NXPI
+SWKS
+MRVL
+MPWR
+TER
+GEN
+CTSH
+ACN
+IT
+ANET
+FFIV
+JNPR
+AKAM
+VRSN
+```
+
+## 6. `data/tickers_semis.txt`
+```
+NVDA
+AMD
+INTC
+TXN
+QCOM
+AVGO
+MU
+AMAT
+LRCX
+KLAC
+ADI
+MCHP
+NXPI
+MRVL
+ON
+SWKS
+MPWR
+QRVO
+TER
+WOLF
+MKSI
+ENTG
+ONTO
+UCTT
+ICHR
+ACLS
+COHU
+FORM
+PLAB
+AOSL
+BRKS
+IPGP
+SMTC
+RMBS
+CRUS
+SLAB
+DIOD
+POWI
+SITM
+AMBA
+ALGM
+MTSI
+SMCI
+NVMI
+CEVA
+MOXC
+HIMX
+NVEC
+SIMO
+LSCC
+AEIS
+IMOS
+NVCR
+AXTI
+XLNX
+MXIM
+ALTR
+BRCM
+LSI
+PMCS
+CIEN
+JDSU
+VIAV
+LITE
+OCLR
+INFN
+FNSR
+AAOI
+```
+
+## 7. `data/tickers_software.txt`
+```
+MSFT
+ORCL
+CRM
+ADBE
+NOW
+SAP
+INTU
+WDAY
+TEAM
+ADSK
+SNPS
+CDNS
+ANSS
+PANW
+FTNT
+CRWD
+ZS
+DDOG
+NET
+SNOW
+MDB
+PLTR
+HUBS
+ZM
+VEEV
+DXCM
+ROP
+TYL
+GWRE
+PTC
+AZPN
+MANH
+ALTR
+CTXS
+AYX
+JAMF
+ESTC
+DOCN
+FROG
+CFLT
+PATH
+S
+AI
+IOT
+BILL
+PCTY
+PAYC
+SQ
+PYPL
+PAGS
+NU
+MELI
+CPNG
+GRAB
+SHOP
+TOST
+RBLX
+U
+ABNB
+DASH
+UBER
+LYFT
+```
+
+## 8. `data/tickers_financials.txt`
+```
+JPM
+BAC
+WFC
+C
+GS
+MS
+BLK
+SPGI
+CME
+ICE
+MCO
+AXP
+V
+MA
+COF
+USB
+PNC
+TFC
+SCHW
+BK
+STT
+NTRS
+BEN
+TROW
+IVZ
+AMG
+AMP
+AFL
+MET
+PRU
+ALL
+TRV
+PGR
+CB
+AIG
+AJG
+MMC
+AON
+WTW
+BRO
+HIG
+GL
+RNR
+L
+WRB
+AFG
+RE
+EG
+KMPR
+RGA
+LNC
+FNF
+FAF
+ORI
+CINF
+PFG
+UNM
+TMK
+AIZ
+AXS
+VOYA
+```
+
+## 9. `data/tickers_healthcare.txt`
+```
+UNH
+LLY
+JNJ
+ABBV
+MRK
+TMO
+ABT
+AMGN
+DHR
+PFE
+BMY
+GILD
+CVS
+REGN
+CI
+VRTX
+ELV
+MCK
+COR
+ZTS
+ISRG
+HUM
+DXCM
+BSX
+SYK
+MDT
+BDX
+EW
+IDXX
+A
+RMD
+MTD
+IQV
+ALGN
+HOLX
+BAX
+TFX
+PODD
+GEHC
+WST
+TECH
+STE
+WAT
+RVTY
+PKI
+XRAY
+ENOV
+HSIC
+HAE
+ZBH
+CTLT
+SOLV
+MOH
+CNC
+HCA
+THC
+UHS
+DVA
+CHE
+AMED
+ENSG
+LH
+DGX
+VTRS
+TEVA
+PRGO
+PBH
+```
+
+## 10. `data/tickers_discretionary.txt`
+```
+AMZN
+TSLA
+HD
+MCD
+NKE
+SBUX
+LOW
+TJX
+BKNG
+MAR
+CMG
+ORLY
+GM
+F
+AZO
+YUM
+DRI
+ROST
+DHI
+LEN
+PHM
+NVR
+TGT
+ULTA
+DG
+DLTR
+POOL
+BBY
+TPR
+RL
+VFC
+HLT
+MGM
+LVS
+WYNN
+RCL
+CCL
+NCLH
+MAT
+HAS
+LKQ
+AAP
+GPC
+KMX
+AN
+TSCO
+DKS
+DECK
+LULU
+CROX
+BURL
+FIVE
+OLLI
+GPS
+ANF
+AEO
+URBN
+EXPR
+DDS
+PLCE
+CASY
+CHWY
+CVNA
+SAH
+SKX
+BOOT
+GES
+JWN
+M
+KSS
+WMT
+COST
+TGT
+DG
