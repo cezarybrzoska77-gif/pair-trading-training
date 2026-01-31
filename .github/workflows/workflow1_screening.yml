@@ -143,27 +143,18 @@ jobs:
     
     - name: Reorganize downloaded files
       run: |
-        # Move files from artifact directories to universe directories
         for universe in tech_core semis software financials healthcare discretionary; do
           mkdir -p results/${universe}
-          
-          # Move stable files
           if [ -d "results/${universe}-stable" ]; then
             mv results/${universe}-stable/${universe}_stable.csv results/${universe}/ 2>/dev/null || true
           fi
-          
-          # Move new candidates
           if [ -d "results/${universe}-new" ]; then
             mv results/${universe}-new/${universe}_new_candidates.csv results/${universe}/ 2>/dev/null || true
           fi
-          
-          # Move dropped pairs
           if [ -d "results/${universe}-dropped" ]; then
             mv results/${universe}-dropped/${universe}_dropped_pairs.csv results/${universe}/ 2>/dev/null || true
           fi
         done
-        
-        # Clean up artifact directories
         rm -rf results/*-stable results/*-new results/*-dropped
     
     - name: Run aggregation
