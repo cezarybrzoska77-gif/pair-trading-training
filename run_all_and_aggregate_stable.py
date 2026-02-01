@@ -1,35 +1,19 @@
-#!/usr/bin/env python3
-import pandas as pd,glob,os
+  aggregate:
+    needs: screening
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-UNIVERSES=["tech_core","semis","software","financials","healthcare","discretionary"]
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-def main():
-    frames=[]
-    new_all=[]
-    drop_all=[]
-    for u in UNIVERSES:
-        f=f"results/{u}/{u}_stable.csv"
-        if os.path.exists(f):
-            df=pd.read_csv(f)
-            df["universe"]=u
-            frames.append(df)
-        newf=f"results/{u}_new_candidates.csv"
-        if os.path.exists(newf): new_all.append(pd.read_csv(newf))
-        dropf=f"results/{u}_dropped_pairs.csv"
-        if os.path.exists(dropf): drop_all.append(pd.read_csv(dropf))
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    comb=pd.concat(frames,ignore_index=True)
-    comb.to_csv("results/combined_pairs_scored.csv",index=False)
-
-    comb.sort_values(
-        by=["grade","score_w"],
-        ascending=[True,False]
-    ).head(150).to_csv("results/combined_top150_watchlist.csv",index=False)
-
-    if new_all:
-        pd.concat(new_all).to_csv("results/new_candidates_global.csv",index=False)
-    if drop_all:
-        pd.concat(drop_all).to_csv("results/dropped_pairs_global.csv",index=False)
-
-if __name__=="__main__":
-    main()
+      - name: Run aggregation
+        run: |
+          python run_all_and_aggregate_stable.py
