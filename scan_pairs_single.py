@@ -44,17 +44,22 @@ def download_prices(tickers, start, auto_adjust):
         threads=True,
     )
 
+    prices = {}
     if isinstance(data.columns, pd.MultiIndex):
-        px = {}
         for t in tickers:
             if (t, "Close") in data.columns:
-                px[t] = data[(t, "Close")].rename(t)
-        prices = pd.concat(px.values(), axis=1)
+                s = data[(t, "Close")].dropna()
+                if len(s) > 0:
+                    prices[t] = s.rename(t)
     else:
-        prices = data.rename(columns={"Close": tickers[0]})
+        s = data["Close"].dropna()
+        if len(s) > 0:
+            prices[tickers[0]] = s.rename(tickers[0])
 
-    prices = prices.dropna(how="all")
-    return prices
+    if not prices:
+        raise RuntimeError("No price data downloaded.")
+
+    return pd.concat(prices.values(), axis=1)
 
 
 def compute_returns(prices, percent=False):
@@ -76,17 +81,25 @@ def residuals_vs_index(price_series, index_series):
     y = df.iloc[:, 0]
     x = sm.add_constant(df.iloc[:, 1])
     model = sm.OLS(y, x).fit()
-    resid = model.resid
-    return resid
+    return model.resid
 
 
-def rolling_corr(a, b, window):
-    return a.rolling(window).corr(b)
+def rolling_spearman(a, b, window):
+    df = pd.concat([a, b], axis=1).dropna()
+    if len(df) < window:
+        return np.nan
+    r = (
+        df.rank()
+        .rolling(window)
+        .corr()
+        .iloc[-1, 0]
+    )
+    return r
 
 
 def corr_hitrate_30d_6m(a, b):
     lookback_6m = 126
-    roll = rolling_corr(a, b, 30)
+    roll = a.rolling(30).corr(b)
     recent = roll.dropna().iloc[-lookback_6m:]
     if len(recent) == 0:
         return np.nan
@@ -110,7 +123,6 @@ def engle_granger_best(a, b, lookbacks):
 
 
 def score_pair(row):
-    # Normalized components (0–1)
     corr_mean = np.clip(row["corr_mean"], 0, 1)
     spear_mean = np.clip((row["spearman_60"] + row["spearman_90"]) / 2, 0, 1)
     resid = np.clip(row["resid_corr_max"], 0, 1)
@@ -142,8 +154,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     tickers = load_tickers(args.tickers_file)
-    if "XLY" not in tickers:
-        tickers.append("XLY")
+    tickers = list(dict.fromkeys(tickers + ["XLY"]))
 
     prices = download_prices(tickers, args.start_date, args.auto_adjust)
     returns = compute_returns(prices, percent=args.use_percent_returns)
@@ -153,39 +164,30 @@ def main():
 
     lookbacks = [int(x) for x in args.coint_lookbacks.split(",")]
 
+    valid_tickers = [t for t in returns.columns if t != "XLY"]
+
     results = []
 
-    for a, b in itertools.combinations([t for t in tickers if t != "XLY"], 2):
-        if a not in returns or b not in returns:
-            continue
-
-        ra = returns[a].dropna()
-        rb = returns[b].dropna()
+    for a, b in itertools.combinations(valid_tickers, 2):
+        ra, rb = returns[a], returns[b]
         df = pd.concat([ra, rb], axis=1).dropna()
-
         sample = len(df)
         if sample < args.min_sample:
             continue
 
         corr_60 = df[a].rolling(60).corr(df[b]).iloc[-1]
         corr_90 = df[a].rolling(90).corr(df[b]).iloc[-1]
-
         corr_obs_60 = df[a].rolling(60).count().iloc[-1]
         corr_obs_90 = df[a].rolling(90).count().iloc[-1]
-
         corr_mean = np.nanmean([corr_60, corr_90])
 
-        spearman_60 = df[a].rolling(60).corr(df[b], method="spearman").iloc[-1]
-        spearman_90 = df[a].rolling(90).corr(df[b], method="spearman").iloc[-1]
+        spearman_60 = rolling_spearman(df[a], df[b], 60)
+        spearman_90 = rolling_spearman(df[a], df[b], 90)
 
-        pa = prices[a]
-        pb = prices[b]
-        pidx = prices["XLY"]
-
-        resid_a = residuals_vs_index(pa, pidx)
-        resid_b = residuals_vs_index(pb, pidx)
-
+        resid_a = residuals_vs_index(prices[a], prices["XLY"])
+        resid_b = residuals_vs_index(prices[b], prices["XLY"])
         resid_df = pd.concat([resid_a, resid_b], axis=1).dropna()
+
         resid_corr_60 = resid_df.iloc[:, 0].rolling(60).corr(resid_df.iloc[:, 1]).iloc[-1]
         resid_corr_90 = resid_df.iloc[:, 0].rolling(90).corr(resid_df.iloc[:, 1]).iloc[-1]
         resid_corr_max = np.nanmax([resid_corr_60, resid_corr_90])
@@ -197,14 +199,11 @@ def main():
         )
 
         grade = None
-
         if (
             corr_mean >= 0.82
-            and coint_p is not None
             and coint_p <= 0.05
             and hitrate >= 0.70
             and resid_corr_max >= 0.60
-            and sample >= args.min_sample
         ):
             grade = "A"
         elif (
@@ -212,39 +211,35 @@ def main():
                 corr_mean >= 0.78
                 or (corr_60 >= 0.80 and corr_90 >= 0.76)
             )
-            and coint_p is not None
             and coint_p <= 0.12
             and spearman_60 >= 0.75
             and spearman_90 >= 0.75
             and resid_corr_max >= 0.60
             and hitrate >= 0.70
-            and sample >= args.min_sample
         ):
             grade = "B+"
 
-        results.append(
-            {
-                "pair": f"{a}/{b}",
-                "a": a,
-                "b": b,
-                "sample": sample,
-                "corr_60": corr_60,
-                "corr_90": corr_90,
-                "corr_obs_60": corr_obs_60,
-                "corr_obs_90": corr_obs_90,
-                "corr_mean": corr_mean,
-                "spearman_60": spearman_60,
-                "spearman_90": spearman_90,
-                "resid_corr_60": resid_corr_60,
-                "resid_corr_90": resid_corr_90,
-                "resid_corr_max": resid_corr_max,
-                "corr_hitrate_30d_6m": hitrate,
-                "coint_pvalue_best": coint_p,
-                "coint_stat_best": coint_stat,
-                "coint_lookback_best": coint_lb,
-                "grade": grade,
-            }
-        )
+        results.append({
+            "pair": f"{a}/{b}",
+            "a": a,
+            "b": b,
+            "sample": sample,
+            "corr_60": corr_60,
+            "corr_90": corr_90,
+            "corr_obs_60": corr_obs_60,
+            "corr_obs_90": corr_obs_90,
+            "corr_mean": corr_mean,
+            "spearman_60": spearman_60,
+            "spearman_90": spearman_90,
+            "resid_corr_60": resid_corr_60,
+            "resid_corr_90": resid_corr_90,
+            "resid_corr_max": resid_corr_max,
+            "corr_hitrate_30d_6m": hitrate,
+            "coint_pvalue_best": coint_p,
+            "coint_stat_best": coint_stat,
+            "coint_lookback_best": coint_lb,
+            "grade": grade,
+        })
 
     df_all = pd.DataFrame(results)
     df_all["score_w"] = df_all.apply(score_pair, axis=1)
