@@ -2,7 +2,6 @@ import sys
 import subprocess
 import os
 import argparse
-import glob
 
 # ---------- DEFENSIVE DEPENDENCY BOOTSTRAP ----------
 try:
@@ -43,7 +42,7 @@ def load_stable_files(results_dir):
         frames.append(df)
 
     if not frames:
-        raise RuntimeError("No *_stable.csv files found")
+        return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
 
@@ -73,8 +72,13 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ===== LOAD + AGGREGATE =====
     combined = load_stable_files(args.results_dir)
+
+    if combined.empty:
+        print("ℹ️  No *_stable.csv found in any universe.")
+        print("ℹ️  This is normal during early persistence buildup.")
+        print("✅ Aggregation skipped gracefully.")
+        return
 
     combined["grade_rank"] = combined["grade"].map(GRADE_ORDER).fillna(0)
 
@@ -88,7 +92,6 @@ def main():
         index=False,
     )
 
-    # ===== WATCHLIST =====
     combined_sorted.head(args.topk).drop(
         columns=["grade_rank"]
     ).to_csv(
@@ -96,7 +99,6 @@ def main():
         index=False,
     )
 
-    # ===== NEW / DROPPED =====
     new_global = load_optional(args.results_dir, "new_candidates.csv")
     dropped_global = load_optional(args.results_dir, "dropped_pairs.csv")
 
@@ -112,7 +114,7 @@ def main():
             index=False,
         )
 
-    print("✅ Global aggregation finished successfully")
+    print("✅ Global aggregation completed successfully")
 
 
 if __name__ == "__main__":
