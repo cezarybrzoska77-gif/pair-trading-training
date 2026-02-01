@@ -28,22 +28,26 @@ jobs:
 
       - name: Run DHI/PHM trade analysis
         run: |
-          python analyze_dhi_phm_trade.py --start-date 2018-01-01 --auto-adjust --out-dir results_workflow2 --plot
+          python analyze_dhi_phm_trade.py \
+            --start-date 2018-01-01 \
+            --auto-adjust \
+            --out-dir results_workflow2 \
+            --plot
 
-      - name: Upload CSV artifact
-        uses: actions/upload-artifact@v3
+      - name: Upload trade readiness CSV
+        uses: actions/upload-artifact@v4
         with:
           name: dhi_phm_trade_csv
           path: results_workflow2/DHI_PHM_trade_readiness.csv
 
-      - name: Upload JSON artifact
-        uses: actions/upload-artifact@v3
+      - name: Upload trade readiness JSON
+        uses: actions/upload-artifact@v4
         with:
           name: dhi_phm_trade_json
           path: results_workflow2/DHI_PHM_trade_readiness.json
 
-      - name: Upload PNG chart artifact
-        uses: actions/upload-artifact@v3
+      - name: Upload spread chart PNG
+        uses: actions/upload-artifact@v4
         with:
           name: dhi_phm_trade_chart
           path: results_workflow2/DHI_PHM_spread_chart.png
