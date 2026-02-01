@@ -1,0 +1,41 @@
+name: Workflow 1 v2 — Structural Pair Screening
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * *"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        universe:
+          - tech_core
+          - semis
+          - software
+          - financials
+          - healthcare
+          - discretionary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Scan universe
+        run: |
+          python scan_pairs_multi_v2.py \
+            --universe ${{ matrix.universe }} \
+            --start-date 2018-01-01
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pairs_${{ matrix.universe }}
+          path: results/${{ matrix.universe }}/*.csv
