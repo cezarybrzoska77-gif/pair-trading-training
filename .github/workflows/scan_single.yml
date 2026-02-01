@@ -34,6 +34,13 @@ jobs:
             --topk 100 \
             --out-dir results/discretionary
 
+      - name: Run stabilization
+        run: |
+          python run_and_stabilize.py \
+            --in-csv results/discretionary/discretionary_candidates.csv \
+            --state state/discretionary_history.csv \
+            --out-dir results/discretionary
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -41,3 +48,6 @@ jobs:
           path: |
             results/discretionary/discretionary_all_metrics.csv
             results/discretionary/discretionary_candidates.csv
+            results/discretionary/discretionary_stable.csv
+            results/new_candidates.csv
+            results/dropped_pairs.csv
