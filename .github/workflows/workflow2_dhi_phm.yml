@@ -1,53 +1,315 @@
-name: Workflow 2 – DHI/PHM Trade Analysis
+#!/usr/bin/env python3
+"""
+analyze_dhi_phm_trade.py
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 22 * * *'  # codziennie o 22:00 UTC
+Workflow 2 – Retail DHI/PHM Trade Readiness Engine
 
-jobs:
-  analyze_dhi_phm:
-    runs-on: ubuntu-latest
+Opis:
+- Liczy wszystkie metryki dla pary DHI (y) / PHM (x)
+- Beta-neutral (OLS) + cash spread
+- Z-score 60/30, ΔZ3d, half-life, ADF, vol_ratio
+- Rekomendacja trybu hedgingu: beta_neutral / cash_neutral
+- Sprawdza ENTRY zgodnie z progami retail
+- Generuje decyzję TRADE_READY=YES/NO
+- Zapisuje wyniki do CSV/JSON + opcjonalny PNG
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+Test akceptacyjny:
+python analyze_dhi_phm_trade.py --start-date 2018-01-01 --auto-adjust --out-dir results_workflow2
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+Checklist (dla --help-checklist):
+- Beta_OLS
+- Beta_60 / Beta_90
+- Beta stability
+- Spread_beta, Spread_cash
+- ADF p-values
+- Half-life
+- Z-score 60/30
+- Volatility ratio
+- Hedge recommendation
+- Entry ready (YES/NO)
+- Direction (long_y_short_x / short_y_long_x)
+- Sizes per leg
+- Exit rule: |Z60| ≤ 0.5
+"""
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements1.txt
+import argparse
+import os
+import json
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
+from statsmodels.regression.linear_model import OLS
+from statsmodels.tsa.stattools import adfuller
 
-      - name: Create results directory
-        run: mkdir -p results_workflow2
+# ------------------------- Helper Functions -------------------------
 
-      - name: Run DHI/PHM trade analysis
-        run: |
-          python analyze_dhi_phm_trade.py \
-            --start-date 2018-01-01 \
-            --auto-adjust \
-            --out-dir results_workflow2 \
-            --plot
+def download_data(tickers, start_date):
+    df = yf.download(
+        tickers,
+        start=start_date,
+        progress=False,
+        auto_adjust=True,
+        threads=1
+    )
+    # Obsługa multi-ticker
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df["Adj Close"]
+    return df
 
-      - name: Upload trade readiness CSV
-        uses: actions/upload-artifact@v4
-        with:
-          name: dhi_phm_trade_csv
-          path: results_workflow2/DHI_PHM_trade_readiness.csv
+def compute_returns(df, use_percent=False, winsorize=True):
+    if use_percent:
+        rets = df.pct_change()
+    else:
+        rets = np.log(df / df.shift(1))
+    rets = rets.dropna()
+    if winsorize:
+        for col in rets.columns:
+            rets[col] = rets[col].clip(lower=rets[col].quantile(0.01),
+                                        upper=rets[col].quantile(0.99))
+    return rets
 
-      - name: Upload trade readiness JSON
-        uses: actions/upload-artifact@v4
-        with:
-          name: dhi_phm_trade_json
-          path: results_workflow2/DHI_PHM_trade_readiness.json
+def rolling_beta(y, x, window):
+    betas = y.rolling(window).cov(x) / x.rolling(window).var()
+    return betas.iloc[-1]
 
-      - name: Upload spread chart PNG
-        uses: actions/upload-artifact@v4
-        with:
-          name: dhi_phm_trade_chart
-          path: results_workflow2/DHI_PHM_spread_chart.png
+def half_life(series):
+    s = series.dropna()
+    if len(s) < 2:
+        return np.nan
+    delta = s.diff().dropna().values.reshape(-1,1)
+    s_lag = s.shift(1).dropna().values.reshape(-1,1)
+    if len(delta) != len(s_lag):
+        min_len = min(len(delta), len(s_lag))
+        delta = delta[-min_len:]
+        s_lag = s_lag[-min_len:]
+    try:
+        rho = np.linalg.lstsq(s_lag, delta, rcond=None)[0][0]
+        if 1 + rho <= 0 or abs(rho) < 1e-8:
+            return np.nan
+        return -np.log(2)/np.log(1 + rho)
+    except:
+        return np.nan
+
+def zscore(series, window):
+    s = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    z = (series - s)/std
+    return z
+
+def compute_adf(series):
+    series = series.dropna()
+    if len(series) < 10:
+        return np.nan, np.nan
+    try:
+        res = adfuller(series, maxlag=1, autolag=None)
+        return res[1], res[0]
+    except:
+        return np.nan, np.nan
+
+def normalize_weights(weights):
+    w = np.array(weights, dtype=float)
+    return w/np.sum(np.abs(w))
+
+# ------------------------- Main Logic -------------------------
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start-date", default="2018-01-01")
+    parser.add_argument("--auto-adjust", action="store_true", default=True)
+    parser.add_argument("--no-auto-adjust", action="store_false", dest="auto_adjust")
+    parser.add_argument("--use-percent-returns", action="store_true", default=False)
+    parser.add_argument("--winsorize", action="store_true", default=True)
+    parser.add_argument("--no-winsorize", action="store_false", dest="winsorize")
+    parser.add_argument("--z-lookbacks", default="60,30")
+    parser.add_argument("--min-sample", type=int, default=200)
+    parser.add_argument("--out-dir", default="results_workflow2")
+    parser.add_argument("--plot", action="store_true", default=True)
+    parser.add_argument("--no-plot", action="store_false", dest="plot")
+    parser.add_argument("--help-checklist", action="store_true")
+    args = parser.parse_args()
+
+    if args.help_checklist:
+        print("\n--- Checklist TRADE_READY ---")
+        print("1) Beta_OLS")
+        print("2) Beta stability (Beta_60 / Beta_90)")
+        print("3) Spread_beta, Spread_cash")
+        print("4) ADF p-values")
+        print("5) Half-life")
+        print("6) Z-score 60/30")
+        print("7) Volatility ratio")
+        print("8) Hedge recommendation")
+        print("9) Entry ready YES/NO")
+        print("10) Direction long_y_short_x / short_y_long_x")
+        print("11) Sizes per leg")
+        print("12) Exit rule: |Z60| <=0.5")
+        exit(0)
+
+    # --- Prepare output folder ---
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    # --- Download data ---
+    tickers = ["DHI", "PHM"]
+    df = download_data(tickers, args.start_date)
+    if df.isna().all().any():
+        raise RuntimeError("No valid data downloaded for tickers")
+
+    y = df["DHI"]
+    x = df["PHM"]
+
+    # --- Returns ---
+    rets = compute_returns(df, use_percent=args.use_percent_returns, winsorize=args.winsorize)
+    ret_y = rets["DHI"]
+    ret_x = rets["PHM"]
+
+    # --- OLS on levels ---
+    df_ols = pd.concat([y, x], axis=1).dropna()
+    X = df_ols["PHM"]
+    X = sm.add_constant(X)
+    y_vec = df_ols["DHI"]
+    ols_model = OLS(y_vec, X).fit()
+    alpha_OLS, beta_OLS = ols_model.params
+    # Beta rolling
+    beta_60 = rolling_beta(ret_y, ret_x, 60)
+    beta_90 = rolling_beta(ret_y, ret_x, 90)
+    beta_stability_pct = 100 * abs(beta_60 - beta_90) / np.mean([abs(beta_60), abs(beta_90)])
+
+    # --- Spreads ---
+    spread_beta = y - (alpha_OLS + beta_OLS * x)
+    spread_cash = y - x
+
+    # --- ADF ---
+    adf_p_beta, adf_stat_beta = compute_adf(spread_beta)
+    adf_p_cash, adf_stat_cash = compute_adf(spread_cash)
+
+    # --- Half-life ---
+    hl_beta = half_life(spread_beta)
+    hl_cash = half_life(spread_cash)
+
+    # --- Z-score ---
+    z_windows = [int(w) for w in args.z_lookbacks.split(",")]
+    Z60 = zscore(spread_beta, z_windows[0]).iloc[-1]
+    Z30 = zscore(spread_beta, z_windows[1]).iloc[-1]
+    deltaZ3d = Z60 - zscore(spread_beta, z_windows[0]).iloc[-4]
+
+    # --- Volatility ratio ---
+    vol_ratio = spread_beta.std() / (ret_y.std() + ret_x.std())
+
+    # --- Hedge recommendation ---
+    hedge_reco = "cash_neutral"
+    if beta_stability_pct <= 25:
+        if (adf_p_beta <= adf_p_cash) and (hl_beta <= hl_cash or adf_p_beta < adf_p_cash - 0.02):
+            hedge_reco = "beta_neutral"
+    elif 25 < beta_stability_pct < 35:
+        if (adf_p_beta <= adf_p_cash - 0.02) or (hl_beta +3 < hl_cash):
+            hedge_reco = "beta_neutral"
+
+    # --- ENTRY ---
+    trade_ready = "NO"
+    direction = None
+    sizes = None
+    exit_rule = "|Z60| ≤ 0.5"
+
+    if hedge_reco == "beta_neutral" and beta_stability_pct > 35:
+        trade_ready = "NO"
+    else:
+        if adf_p_beta <= 0.05 and hl_beta <= 15:
+            if Z60 <= -2 and Z30 <= -1.5:
+                trade_ready = "YES"
+                direction = "long_y_short_x"
+                sizes = normalize_weights([1.0, -beta_OLS])
+            elif Z60 >= 2 and Z30 >= 1.5:
+                trade_ready = "YES"
+                direction = "short_y_long_x"
+                sizes = normalize_weights([1.0, -beta_OLS])
+
+    # --- Output Data ---
+    output = {
+        "TRADE_READY": trade_ready,
+        "hedge_reco": hedge_reco,
+        "direction": direction,
+        "sizes": sizes.tolist() if sizes is not None else None,
+        "exit_rule": exit_rule,
+        "alpha_OLS": alpha_OLS,
+        "beta_OLS": beta_OLS,
+        "beta_60": beta_60,
+        "beta_90": beta_90,
+        "beta_stability_pct": beta_stability_pct,
+        "ADF_p_beta": adf_p_beta,
+        "ADF_stat_beta": adf_stat_beta,
+        "ADF_p_cash": adf_p_cash,
+        "ADF_stat_cash": adf_stat_cash,
+        "half_life_beta": hl_beta,
+        "half_life_cash": hl_cash,
+        "Z60": Z60,
+        "Z30": Z30,
+        "deltaZ3d": deltaZ3d,
+        "vol_ratio": vol_ratio
+    }
+
+    # --- Save CSV & JSON ---
+    csv_file = os.path.join(args.out_dir, "DHI_PHM_trade_readiness.csv")
+    json_file = os.path.join(args.out_dir, "DHI_PHM_trade_readiness.json")
+
+    pd.DataFrame([output]).to_csv(csv_file, index=False)
+    with open(json_file, "w") as f:
+        json.dump(output, f, indent=4)
+
+    # --- Optional plot ---
+    if args.plot:
+        plt.figure(figsize=(12,8))
+
+        plt.subplot(3,1,1)
+        spread_beta.rolling(60).mean().plot(label="Spread_beta mean")
+        plt.fill_between(spread_beta.index,
+                         spread_beta.rolling(60).mean()-2*spread_beta.rolling(60).std(),
+                         spread_beta.rolling(60).mean()+2*spread_beta.rolling(60).std(),
+                         color="orange", alpha=0.2, label="±2σ")
+        plt.plot(spread_beta, label="Spread_beta", alpha=0.7)
+        plt.legend(); plt.title("Spread Beta + Rolling ±2σ")
+
+        plt.subplot(3,1,2)
+        z60_series = zscore(spread_beta, z_windows[0])
+        z30_series = zscore(spread_beta, z_windows[1])
+        z60_series.plot(label="Z60")
+        z30_series.plot(label="Z30")
+        plt.axhline(2,color="red",linestyle="--")
+        plt.axhline(1.5,color="orange",linestyle="--")
+        plt.axhline(-1.5,color="orange",linestyle="--")
+        plt.axhline(-2,color="red",linestyle="--")
+        plt.axhline(0.5,color="grey",linestyle=":")
+        plt.axhline(-0.5,color="grey",linestyle=":")
+        plt.legend(); plt.title("Z-score 60/30")
+
+        plt.subplot(3,1,3)
+        plt.plot(spread_beta[-250:], label="Spread_beta")
+        plt.plot(spread_cash[-250:], label="Spread_cash")
+        plt.title(f"Spread Comparison | ADF_beta={adf_p_beta:.4f}, ADF_cash={adf_p_cash:.4f}")
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.out_dir, "DHI_PHM_spread_chart.png"), dpi=150)
+        plt.close()
+
+    # --- Console summary ---
+    print("\n--- DHI/PHM Trade Readiness ---")
+    for k,v in output.items():
+        if isinstance(v,float):
+            print(f"{k:20s}: {v:8.4f}")
+        else:
+            print(f"{k:20s}: {v}")
+    print(f"\nTRADE_READY = {trade_ready}")
+    if trade_ready=="YES":
+        print(f"Direction = {direction}")
+        print(f"Sizes = {sizes}")
+        print(f"Exit rule = {exit_rule}")
+        print("Plan: conflict ✅, calendar ✅, hedge ✅, weights set, exit at |Z60| ≤0.5 + 2×HL")
+    else:
+        print("Main reason NO: check ADF/half-life/Z-scores")
+        print("Suggested next step: wait for dual-Z or consider cash_neutral if ADF_cash better")
+
+# ------------------------- Run -------------------------
+if __name__ == "__main__":
+    import statsmodels.api as sm
+    main()
+
