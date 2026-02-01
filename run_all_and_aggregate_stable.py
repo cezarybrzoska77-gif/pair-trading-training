@@ -1,7 +1,17 @@
+import sys
+import subprocess
 import os
-import glob
 import argparse
-import pandas as pd
+import glob
+
+# ---------- DEFENSIVE DEPENDENCY BOOTSTRAP ----------
+try:
+    import pandas as pd
+except ModuleNotFoundError:
+    print("[INFO] pandas not found — installing...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pandas"])
+    import pandas as pd
+# ---------------------------------------------------
 
 
 UNIVERSES = [
@@ -13,19 +23,19 @@ UNIVERSES = [
     "discretionary",
 ]
 
-
 GRADE_ORDER = {"A": 2, "B+": 1}
 
 
-def load_stable_files(base_results_dir):
+def load_stable_files(results_dir):
     frames = []
 
     for universe in UNIVERSES:
         path = os.path.join(
-            base_results_dir, universe, f"{universe}_stable.csv"
+            results_dir, universe, f"{universe}_stable.csv"
         )
+
         if not os.path.exists(path):
-            print(f"[WARN] Missing stable file: {path}")
+            print(f"[WARN] Missing: {path}")
             continue
 
         df = pd.read_csv(path)
@@ -33,16 +43,16 @@ def load_stable_files(base_results_dir):
         frames.append(df)
 
     if not frames:
-        raise RuntimeError("No *_stable.csv files found in any universe")
+        raise RuntimeError("No *_stable.csv files found")
 
     return pd.concat(frames, ignore_index=True)
 
 
-def aggregate_new_or_dropped(base_results_dir, filename):
+def load_optional(results_dir, filename):
     frames = []
 
     for universe in UNIVERSES:
-        path = os.path.join(base_results_dir, universe, filename)
+        path = os.path.join(results_dir, universe, filename)
         if os.path.exists(path):
             df = pd.read_csv(path)
             df["universe"] = universe
@@ -50,37 +60,22 @@ def aggregate_new_or_dropped(base_results_dir, filename):
 
     if frames:
         return pd.concat(frames, ignore_index=True)
-    else:
-        return pd.DataFrame()
+
+    return pd.DataFrame()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--results-dir",
-        default="results",
-        help="Base results directory",
-    )
-    parser.add_argument(
-        "--out-dir",
-        default="results",
-        help="Output directory for combined files",
-    )
-    parser.add_argument(
-        "--topk",
-        type=int,
-        default=150,
-        help="Top K pairs for watchlist",
-    )
-
+    parser.add_argument("--results-dir", default="results")
+    parser.add_argument("--out-dir", default="results")
+    parser.add_argument("--topk", type=int, default=150)
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ========= LOAD & MERGE STABLE =========
+    # ===== LOAD + AGGREGATE =====
     combined = load_stable_files(args.results_dir)
 
-    # grade ranking
     combined["grade_rank"] = combined["grade"].map(GRADE_ORDER).fillna(0)
 
     combined_sorted = combined.sort_values(
@@ -88,30 +83,22 @@ def main():
         ascending=[False, False],
     )
 
-    combined_path = os.path.join(
-        args.out_dir, "combined_pairs_scored.csv"
-    )
     combined_sorted.drop(columns=["grade_rank"]).to_csv(
-        combined_path, index=False
+        os.path.join(args.out_dir, "combined_pairs_scored.csv"),
+        index=False,
     )
 
-    # ========= TOP WATCHLIST =========
-    watchlist = combined_sorted.head(args.topk).drop(
+    # ===== WATCHLIST =====
+    combined_sorted.head(args.topk).drop(
         columns=["grade_rank"]
+    ).to_csv(
+        os.path.join(args.out_dir, "combined_top150_watchlist.csv"),
+        index=False,
     )
 
-    watchlist_path = os.path.join(
-        args.out_dir, "combined_top150_watchlist.csv"
-    )
-    watchlist.to_csv(watchlist_path, index=False)
-
-    # ========= NEW & DROPPED =========
-    new_global = aggregate_new_or_dropped(
-        args.results_dir, "new_candidates.csv"
-    )
-    dropped_global = aggregate_new_or_dropped(
-        args.results_dir, "dropped_pairs.csv"
-    )
+    # ===== NEW / DROPPED =====
+    new_global = load_optional(args.results_dir, "new_candidates.csv")
+    dropped_global = load_optional(args.results_dir, "dropped_pairs.csv")
 
     if not new_global.empty:
         new_global.to_csv(
@@ -125,9 +112,7 @@ def main():
             index=False,
         )
 
-    print("✅ Aggregation complete")
-    print(f" - {combined_path}")
-    print(f" - {watchlist_path}")
+    print("✅ Global aggregation finished successfully")
 
 
 if __name__ == "__main__":
