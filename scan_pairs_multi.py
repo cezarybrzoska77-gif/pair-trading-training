@@ -1,147 +1,183 @@
 #!/usr/bin/env python3
-import argparse
+"""
+WORKFLOW 1 – MULTI-BASKET PAIR SCANNER (RETAIL)
+
+Cel:
+- wygenerować WIĘCEJ sensownych par (8–15+), nie tylko 1–2
+- luźniejsze progi, ale nadal kontrola jakości
+- brak stabilizacji / histerezy (to jest Workflow 2)
+
+Kryteria (świadomie poluzowane):
+- min wspólnych obserwacji: 400
+- Pearson corr (returns, 252): >= 0.70
+- Engle-Granger p-value: <= 0.10
+- Half-life: <= 60 dni
+- Avg |Z| (60): >= 1.5
+"""
+
 import os
 import itertools
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import warnings
 from statsmodels.tsa.stattools import coint
-import statsmodels.api as sm
+from statsmodels.regression.linear_model import OLS
+from statsmodels.tools.tools import add_constant
+from datetime import datetime
 
-warnings.filterwarnings("ignore")
+# ================= CONFIG =================
+START_DATE = "2018-01-01"
+MIN_SAMPLE = 400
 
-UNIVERSE_CONFIG = {
-    "tech_core": {"index": "QQQ"},
-    "semis": {"index": "SOXX"},
-    "software": {"index": "IGV"},
-    "financials": {"index": "XLF"},
-    "healthcare": {"index": "XLV"},
-    "discretionary": {"index": "XLY"},
+CORR_MIN = 0.70
+COINT_P_MAX = 0.10
+HALF_LIFE_MAX = 60
+AVG_Z_MIN = 1.5
+
+BASKETS = {
+    "tech_core": "data/tickers_tech_core.txt",
+    "semis": "data/tickers_semis.txt",
+    "software": "data/tickers_software.txt",
+    "financials": "data/tickers_financials.txt",
+    "healthcare": "data/tickers_healthcare.txt",
+    "discretionary": "data/tickers_discretionary.txt",
 }
 
-def parse_args():
-    p = argparse.ArgumentParser("Multi-basket pair scanner")
-    p.add_argument("--universe", required=True, choices=UNIVERSE_CONFIG.keys())
-    p.add_argument("--start-date", default="2018-01-01")
-    p.add_argument("--auto-adjust", action="store_true", default=True)
-    p.add_argument("--use-percent-returns", action="store_true", default=False)
-    p.add_argument("--winsorize", action="store_true", default=True)
-    p.add_argument("--coint-lookbacks", default="240,300")
-    p.add_argument("--min-sample", type=int, default=200)
-    p.add_argument("--topk", type=int, default=100)
-    return p.parse_args()
+OUT_DIR = "results_workflow1"
+# ==========================================
 
-def load_tickers(universe):
-    path = f"data/tickers_{universe}.txt"
-    with open(path) as f:
-        return [x.strip().upper() for x in f if x.strip()]
 
-def download_prices(tickers, start, auto_adjust):
-    data = yf.download(
+def load_tickers(path):
+    with open(path, "r") as f:
+        return sorted(list(set([x.strip() for x in f if x.strip()])))
+
+
+def download_prices(tickers):
+    df = yf.download(
         tickers,
-        start=start,
-        auto_adjust=auto_adjust,
+        start=START_DATE,
+        auto_adjust=True,
         progress=False,
         group_by="ticker",
-        threads=True,
     )
-    px = {}
+
+    prices = {}
     for t in tickers:
         try:
-            s = data[(t, "Close")].dropna()
-            if len(s) > 0:
-                px[t] = s.rename(t)
+            if isinstance(df.columns, pd.MultiIndex):
+                prices[t] = df[t]["Close"]
+            else:
+                prices[t] = df["Close"]
         except Exception:
             continue
-    return pd.concat(px.values(), axis=1)
 
-def compute_returns(prices, percent=False):
-    return prices.pct_change().dropna() if percent else np.log(prices).diff().dropna()
+    return pd.DataFrame(prices).dropna(how="all")
 
-def winsorize(df):
-    return df.clip(df.quantile(0.01), df.quantile(0.99), axis=1)
 
-def residuals(price, index):
-    df = pd.concat([price, index], axis=1).dropna()
-    y = df.iloc[:,0]
-    x = sm.add_constant(df.iloc[:,1])
-    return sm.OLS(y, x).fit().resid
+def log_returns(df):
+    return np.log(df / df.shift(1)).dropna()
 
-def rolling_spearman(a, b, w):
-    df = pd.concat([a,b],axis=1).dropna()
-    if len(df)<w: return np.nan
-    return df.rank().rolling(w).corr().iloc[-1,0]
 
-def engle_best(a,b,lbs):
-    best=(np.nan,np.nan,np.nan)
-    for lb in lbs:
-        if len(a)>=lb and len(b)>=lb:
-            try:
-                stat,p,_=coint(a[-lb:],b[-lb:])
-                if np.isnan(best[0]) or p<best[0]:
-                    best=(p,stat,lb)
-            except: pass
-    return best
+def half_life(spread):
+    s = spread.dropna()
+    if len(s) < 50:
+        return np.nan
 
-def main():
-    args=parse_args()
-    cfg=UNIVERSE_CONFIG[args.universe]
-    tickers=load_tickers(args.universe)
-    idx=cfg["index"]
-    tickers=list(set(tickers+[idx]))
+    lag = s.shift(1).iloc[1:]
+    delta = s.diff().iloc[1:]
 
-    outdir=f"results/{args.universe}"
-    os.makedirs(outdir,exist_ok=True)
+    model = OLS(delta, add_constant(lag)).fit()
+    rho = model.params[1]
 
-    prices=download_prices(tickers,args.start_date,args.auto_adjust)
-    rets=compute_returns(prices,args.use_percent_returns)
-    if args.winsorize: rets=winsorize(rets)
+    if abs(rho) < 1e-6 or (1 + rho) <= 0:
+        return np.nan
 
-    lbs=[int(x) for x in args.coint_lookbacks.split(",")]
-    rows=[]
+    return -np.log(2) / np.log(1 + rho)
 
-    for a,b in itertools.combinations([t for t in rets.columns if t!=idx],2):
-        df=pd.concat([rets[a],rets[b]],axis=1).dropna()
-        if len(df)<args.min_sample: continue
 
-        corr60=df[a].rolling(60).corr(df[b]).iloc[-1]
-        corr90=df[a].rolling(90).corr(df[b]).iloc[-1]
-        corr_mean=np.nanmean([corr60,corr90])
+def scan_basket(name, tickers):
+    print(f"\n=== SCANNING BASKET: {name} ({len(tickers)} tickers) ===")
 
-        sp60=rolling_spearman(df[a],df[b],60)
-        sp90=rolling_spearman(df[a],df[b],90)
+    prices = download_prices(tickers)
+    if prices.shape[1] < 2:
+        return pd.DataFrame()
 
-        ra=residuals(prices[a],prices[idx])
-        rb=residuals(prices[b],prices[idx])
-        rdf=pd.concat([ra,rb],axis=1).dropna()
-        r60=rdf.iloc[:,0].rolling(60).corr(rdf.iloc[:,1]).iloc[-1]
-        r90=rdf.iloc[:,0].rolling(90).corr(rdf.iloc[:,1]).iloc[-1]
-        rmax=np.nanmax([r60,r90])
+    rets = log_returns(prices)
+    results = []
 
-        hit=(df[a].rolling(30).corr(df[b])>=0.8).iloc[-126:].mean()
+    for y, x in itertools.combinations(prices.columns, 2):
+        px = prices[[y, x]].dropna()
+        if len(px) < MIN_SAMPLE:
+            continue
 
-        pval,stat,lb=engle_best(prices[a],prices[b],lbs)
+        r = rets[[y, x]].dropna()
+        if len(r) < MIN_SAMPLE:
+            continue
 
-        grade=None
-        if corr_mean>=0.82 and pval<=0.05 and hit>=0.70 and rmax>=0.60:
-            grade="A"
-        elif ((corr_mean>=0.78 or (corr60>=0.80 and corr90>=0.76))
-              and pval<=0.12 and sp60>=0.75 and sp90>=0.75 and hit>=0.70 and rmax>=0.60):
-            grade="B+"
+        corr = r[y].rolling(252).corr(r[x]).iloc[-1]
+        if corr < CORR_MIN:
+            continue
 
-        rows.append({
-            "universe":args.universe,"a":a,"b":b,"pair":f"{a}/{b}",
-            "corr_60":corr60,"corr_90":corr90,"corr_mean":corr_mean,
-            "spearman_60":sp60,"spearman_90":sp90,
-            "resid_corr_max":rmax,"corr_hitrate_30d_6m":hit,
-            "coint_pvalue_best":pval,"coint_stat_best":stat,"coint_lookback_best":lb,
-            "grade":grade
+        score, pval, _ = coint(px[y], px[x])
+        if pval > COINT_P_MAX:
+            continue
+
+        model = OLS(px[y], add_constant(px[x])).fit()
+        beta = model.params[1]
+        spread = px[y] - beta * px[x]
+
+        hl = half_life(spread)
+        if np.isnan(hl) or hl > HALF_LIFE_MAX:
+            continue
+
+        z60 = (spread - spread.rolling(60).mean()) / spread.rolling(60).std()
+        avg_z = z60.abs().mean()
+
+        if avg_z < AVG_Z_MIN:
+            continue
+
+        results.append({
+            "basket": name,
+            "y": y,
+            "x": x,
+            "corr_252": round(corr, 3),
+            "coint_p": round(pval, 4),
+            "beta": round(beta, 3),
+            "half_life": round(hl, 1),
+            "avg_abs_z60": round(avg_z, 2),
+            "obs": len(px),
         })
 
-    df=pd.DataFrame(rows)
-    df.to_csv(f"{outdir}/{args.universe}_all_metrics.csv",index=False)
-    df[df.grade.notna()].to_csv(f"{outdir}/{args.universe}_candidates.csv",index=False)
+    return pd.DataFrame(results)
 
-if __name__=="__main__":
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    all_results = []
+
+    for basket, path in BASKETS.items():
+        tickers = load_tickers(path)
+        df = scan_basket(basket, tickers)
+
+        if not df.empty:
+            out_path = f"{OUT_DIR}/pairs_{basket}.csv"
+            df.sort_values("avg_abs_z60", ascending=False).to_csv(out_path, index=False)
+            all_results.append(df)
+            print(f"Saved: {out_path} ({len(df)} pairs)")
+        else:
+            print("No pairs found.")
+
+    if all_results:
+        summary = pd.concat(all_results).sort_values(
+            ["avg_abs_z60", "half_life"],
+            ascending=[False, True]
+        )
+        summary_path = f"{OUT_DIR}/pairs_summary_all_baskets.csv"
+        summary.to_csv(summary_path, index=False)
+        print(f"\n=== SUMMARY SAVED: {summary_path} ({len(summary)} pairs) ===")
+    else:
+        print("\nNo pairs found in any basket.")
+
+
+if __name__ == "__main__":
     main()
